@@ -1,13 +1,18 @@
 package com.tbot.scalp.service;
 
-import com.tbot.scalp.config.ScalpConfig;
-import com.tbot.scalp.model.*;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import org.springframework.stereotype.Service;
+
+import com.tbot.scalp.config.ScalpConfig;
+import com.tbot.scalp.model.OpenPosition;
+import com.tbot.scalp.model.Signal;
+import com.tbot.scalp.model.TradeExecution;
+import com.tbot.scalp.model.TradeOrder;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
@@ -17,13 +22,20 @@ public class OrderManagerService {
     private final ScalpConfig config;
     private final RiskManagementService riskService;
     private final PositionManagerService positionManager;
+    private final HyperliquidExecutionService executionService;
     private final TradeJournalService journalService;
 
+    /**
+     * Process signals: validate risk, then execute (dry-run, limit maker, or market
+     * taker).
+     * In live mode with maker orders, returns PENDING_FILL executions — fills are
+     * detected later by checkPendingOrders().
+     */
     public List<TradeExecution> processSignals(List<Signal> signals) {
         List<TradeExecution> results = new ArrayList<>();
 
-        double balance = config.getDryRunBalance(); // TODO: from exchange when live
-        double equity = balance;
+        double balance = getEffectiveBalance();
+        double equity = getEffectiveEquity();
         riskService.initEquity(equity);
 
         double totalMarginUsed = positionManager.getOpenPositions().stream()
@@ -50,12 +62,13 @@ public class OrderManagerService {
                 continue;
             }
 
-            // Validate
+            // Validate — use equity for drawdown check (t-bot bug #12)
             List<String> rejections = riskService.validateSignal(signal, balance, equity,
                     positionManager.getOpenPairKeys(), totalMarginUsed);
 
             if (!rejections.isEmpty()) {
-                // Contrary signal: score passed but position already open on this coin in opposite direction
+                // Contrary signal: score passed but position already open on this coin in
+                // opposite direction
                 if (config.isContrarySignalEnabled()
                         && rejections.stream().noneMatch(r -> r.startsWith("Score"))
                         && rejections.stream().anyMatch(r -> r.startsWith("Position already open"))) {
@@ -66,6 +79,7 @@ public class OrderManagerService {
                 log.info("[REJECTED] {} {}: {}", signal.getPair(), signal.getTimeframe(), rejections);
                 TradeExecution rejected = TradeExecution.builder()
                         .pair(signal.getPair()).direction(signal.getDirection())
+                        .timeframe(signal.getTimeframe())
                         .status("REJECTED").errorMessage(String.join("; ", rejections))
                         .dryRun(true).executionTimestamp(System.currentTimeMillis())
                         .exchange(config.getExchange())
@@ -74,35 +88,75 @@ public class OrderManagerService {
                 continue;
             }
 
-            // Execute (dry-run by default)
+            // Position sizing
             double posSize = balance * config.getPositionSizePercent() / 100.0;
+            if (posSize < config.getMinPositionSize()) {
+                log.debug("[SKIP] {} position size ${} < min ${}", pairTf, posSize, config.getMinPositionSize());
+                continue;
+            }
             double quantity = posSize * signal.getLeverage() / signal.getEntryPrice();
+            String clientOrderId = "scalp_" + signal.getPair() + "_" + signal.getTimestamp();
 
-            TradeExecution exec = TradeExecution.builder()
-                    .clientOrderId("scalp_" + signal.getPair() + "_" + signal.getTimestamp())
-                    .pair(signal.getPair()).direction(signal.getDirection())
-                    .fillPrice(signal.getEntryPrice())
-                    .quantity(quantity).leverage(signal.getLeverage())
-                    .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
-                    .status(config.isLiveTrading() ? "FILLED" : "DRY_RUN")
-                    .dryRun(!config.isLiveTrading())
-                    .executionTimestamp(System.currentTimeMillis())
-                    .exchange(config.getExchange())
-                    .build();
+            TradeExecution exec;
+
+            if (config.isLiveTrading()) {
+                // === LIVE EXECUTION ===
+                TradeOrder order = TradeOrder.builder()
+                        .clientOrderId(clientOrderId)
+                        .pair(signal.getPair())
+                        .timeframe(signal.getTimeframe())
+                        .direction(signal.getDirection())
+                        .entryPrice(signal.getEntryPrice())
+                        .stopLoss(signal.getStopLoss())
+                        .takeProfit(signal.getTakeProfit())
+                        .leverage(signal.getLeverage())
+                        .quantity(quantity)
+                        .positionSizeUsd(posSize)
+                        .score(signal.getScore())
+                        .signalTimestamp(signal.getTimestamp())
+                        .build();
+
+                if (config.isUseMakerOrders()) {
+                    // Limit GTC order — maker rebate, fill detected later
+                    exec = executionService.placeLimitOrder(order);
+                } else {
+                    // IOC market order — immediate fill
+                    exec = executionService.placeMarketEntry(order);
+                }
+            } else {
+                // === DRY-RUN ===
+                exec = TradeExecution.builder()
+                        .clientOrderId(clientOrderId)
+                        .pair(signal.getPair()).direction(signal.getDirection())
+                        .timeframe(signal.getTimeframe())
+                        .fillPrice(signal.getEntryPrice())
+                        .quantity(quantity).leverage(signal.getLeverage())
+                        .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
+                        .status("DRY_RUN")
+                        .dryRun(true)
+                        .executionTimestamp(System.currentTimeMillis())
+                        .exchange(config.getExchange())
+                        .build();
+            }
 
             journalService.record(exec, exec.getStatus(), signal.getScore(), signal.getTimeframe());
 
+            // Only open position tracking for immediate fills (DRY_RUN or FILLED)
+            // PENDING_FILL positions are opened later when fill is detected in
+            // checkPendingOrders()
             if (exec.isSuccess()) {
                 OpenPosition pos = OpenPosition.builder()
                         .pair(signal.getPair()).timeframe(signal.getTimeframe())
                         .direction(signal.getDirection())
                         .entryPrice(exec.getFillPrice())
-                        .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
-                        .originalStopLoss(signal.getStopLoss())
-                        .leverage(signal.getLeverage()).quantity(quantity)
+                        .stopLoss(exec.getStopLoss()).takeProfit(exec.getTakeProfit())
+                        .originalStopLoss(exec.getStopLoss())
+                        .leverage(exec.getLeverage()).quantity(exec.getQuantity())
                         .currentPrice(exec.getFillPrice())
                         .clientOrderId(exec.getClientOrderId())
                         .exchangeOrderId(exec.getExchangeOrderId())
+                        .tpTriggerId(exec.getTpTriggerId())
+                        .slTriggerId(exec.getSlTriggerId())
                         .exchange(config.getExchange())
                         .dryRun(exec.isDryRun())
                         .openTimestamp(System.currentTimeMillis())
@@ -115,5 +169,34 @@ public class OrderManagerService {
         }
 
         return results;
+    }
+
+    /**
+     * Get effective balance: real from exchange in live mode, simulated otherwise.
+     */
+    public double getEffectiveBalance() {
+        if (config.isLiveTrading()) {
+            double b = executionService.getAvailableBalance();
+            return b > 0 ? b : config.getDryRunBalance();
+        }
+        return config.getDryRunBalance() + positionManager.getRealizedPnl();
+    }
+
+    /**
+     * Get effective equity: real from exchange in live mode, simulated otherwise.
+     */
+    public double getEffectiveEquity() {
+        if (config.isLiveTrading()) {
+            double e = executionService.getEquity();
+            return e > 0 ? e : getEffectiveBalance();
+        }
+        return getEffectiveBalance();
+    }
+
+    /**
+     * Get risk status for display.
+     */
+    public RiskManagementService.RiskStatus getRiskStatus() {
+        return riskService.checkPortfolioRisk(getEffectiveBalance(), getEffectiveEquity());
     }
 }

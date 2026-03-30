@@ -41,6 +41,12 @@
             <artifactId>crypto</artifactId>
             <version>4.12.3</version>
         </dependency>
+        <!-- Hyperliquid EIP-712 signing — msgpack for connectionId -->
+        <dependency>
+            <groupId>org.msgpack</groupId>
+            <artifactId>msgpack-core</artifactId>
+            <version>0.9.8</version>
+        </dependency>
         <!-- WebSocket client -->
         <dependency>
             <groupId>org.java-websocket</groupId>

@@ -2,6 +2,75 @@
 
 ## 2026-03-30
 
+### Implémentation live trading Hyperliquid
+
+**Architecture complète du live trading** — intégration de l'exécution réelle sur Hyperliquid avec tous les guards issus des bugs corrigés sur t-bot.
+
+#### Nouveaux fichiers
+- **`ScheduledTaskService`** — 3 tâches planifiées indépendantes :
+  - Analyse + exécution de signaux (toutes les 60s)
+  - Polling des ordres limit pending (toutes les 10s) — détection fills + expiration/cancel automatique
+  - Sync exchange + lifecycle positions (toutes les 15s) — détection TP/SL hit, trailing stop, break-even
+  - Toutes les tâches wrappées en try-catch global (t-bot bug #14 : thread scheduler mort)
+
+#### Ordres limit GTC — mécanisme de suivi et d'annulation
+- **GTC + cancel after 1 candle** si non fillé — garde le rebate maker si fillé
+- Les ordres pending sont trackés dans `HyperliquidExecutionService.pendingOrders` (ConcurrentHashMap)
+- `checkPendingOrders()` toutes les 10s : détecte fills via `userFillsByTime`, cancel les ordres expirés
+- Distinction resting vs immediate fill : si le limit order cross le book, il est traité comme FILLED immédiatement (TP/SL posés tout de suite)
+- Match par OID uniquement (pas par coin — évite les faux positifs de fill)
+
+#### OrderManagerService — exécution live intégrée
+- Mode live : construit un `TradeOrder`, appelle `placeLimitOrder()` (maker) ou `placeMarketEntry()` (taker/IOC)
+- Mode dry-run : inchangé
+- Balance/equity depuis l'exchange en live (t-bot bug #12 : equity vs available balance pour drawdown)
+- `PENDING_FILL` n'est PAS `isSuccess()` — la position n'est créée qu'au fill réel
+
+#### PositionManagerService — lifecycle live complet
+- **`processPendingFills()`** — transforme les fills en positions trackées avec TP/SL triggers
+- **`syncWithExchange()`** — détecte les positions fermées par triggers TP/SL sur l'exchange
+  - Safety guard : si l'exchange retourne 0 positions mais on en tracke > 0, skip le sync (t-bot bug #13)
+  - Détermine TP_HIT vs SL_HIT par comparaison du prix courant
+- **`recoverPositions()`** — au startup, reconstruit les positions depuis l'exchange
+  - Parse leverage (Number, Map `{type, value}`, ou String)
+  - SL/TP conservateurs basés sur `maxSlPercent`
+  - Détection auto break-even (SL proche de l'entry = BE appliqué, t-bot bug #9)
+- **`closePosition()`** — ferme réellement sur l'exchange en live (t-bot bug #1)
+- **Break-even + trailing stop** — mise à jour du SL trigger order sur l'exchange (cancel + replace, t-bot bug #7)
+- SL/TP candle check en dry-run uniquement (live s'appuie sur les triggers exchange)
+
+#### StartupRunner — position recovery au startup
+- Phase ajoutée : `recoverPositions()` **avant** la première analyse (pattern t-bot)
+- Backtest au startup skip en live mode
+
+#### ScalpController — endpoints exchange
+- `GET /api/bot/exchange/positions` — positions directement depuis l'exchange
+- `GET /api/bot/exchange/balance` — balance + equity (live ou dry-run)
+- `GET /api/bot/pending-orders` — nombre d'ordres limit en attente
+- `/api/state` et `/api/bot/state` — balance/equity réelles depuis l'exchange en live
+- `POST /api/close-position/{pair}` — ferme réellement sur l'exchange en live
+
+#### TradeExecution — nouveau statut et champ
+- Status `PENDING_FILL` pour ordres limit non encore fillés
+- Champ `score` ajouté (propagé du signal à l'ordre)
+
+#### HyperliquidExecutionService — corrections
+- `buildRejected()` helper ajouté
+- `parseOrderResult()` distingue resting/immediate fill
+- `checkOrderFilled()` : match par OID uniquement (pas par coin)
+- Score propagé dans tous les builders TradeExecution
+
+#### Bugs t-bot anticipés
+| # | Bug t-bot | Protection dans tbot-scalp |
+|---|-----------|---------------------------|
+| 1 | checkNaturalClose sans closePosition | `closePosition()` ferme sur l'exchange |
+| 2 | Prix TP/SL périmés | TP/SL recalculés proportionnellement au fill |
+| 7 | BE SL pas mis à jour sur l'exchange | `updateExchangeStopLoss()` cancel+replace |
+| 9 | BE perdu au restart | `recoverPositions()` détecte BE par distance SL/entry |
+| 12 | Drawdown calculé sur balance au lieu d'equity | `getEffectiveEquity()` |
+| 13 | Faux SL_HIT sur erreur 429 | Safety guard si exchange retourne 0 positions |
+| 14 | Thread scheduler mort | try-catch global sur toutes les tâches planifiées |
+
 ### Ajout frais de trading + slippage de sortie au backtest
 - **`takerFeePercent`** = 0.035% (Hyperliquid taker fee par côté) → déduit round-trip (entry+exit) × leverage du PnL de chaque trade
 - **`exitSlippagePercent`** = 0.04% → appliqué adversement sur le prix de sortie (trigger→market slippage)

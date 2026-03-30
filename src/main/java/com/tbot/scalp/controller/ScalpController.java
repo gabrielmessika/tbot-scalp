@@ -22,7 +22,9 @@ import com.tbot.scalp.config.StartupRunner;
 import com.tbot.scalp.model.AnalysisResult;
 import com.tbot.scalp.model.OpenPosition;
 import com.tbot.scalp.service.AnalysisService;
+import com.tbot.scalp.service.HyperliquidExecutionService;
 import com.tbot.scalp.service.HyperliquidWebSocketService;
+import com.tbot.scalp.service.OrderManagerService;
 import com.tbot.scalp.service.PositionManagerService;
 import com.tbot.scalp.service.RiskManagementService;
 import com.tbot.scalp.service.TradeHistoryService;
@@ -40,6 +42,8 @@ public class ScalpController {
     private final AnalysisService analysisService;
     private final PositionManagerService positionManager;
     private final RiskManagementService riskService;
+    private final OrderManagerService orderManager;
+    private final HyperliquidExecutionService executionService;
     private final HyperliquidWebSocketService wsService;
     private final TradeJournalService journalService;
     private final TradeHistoryService historyService;
@@ -81,8 +85,8 @@ public class ScalpController {
         state.put("cooldowns", positionManager.getActiveCooldowns());
         state.put("wsConnected", wsService.isConnected());
 
-        double balance = getEffectiveBalance();
-        double equity = balance;
+        double balance = orderManager.getEffectiveBalance();
+        double equity = orderManager.getEffectiveEquity();
         RiskManagementService.RiskStatus risk = riskService.checkPortfolioRisk(balance, equity);
         state.put("risk", risk);
 
@@ -92,6 +96,7 @@ public class ScalpController {
         state.put("startupComplete", startupRunner.isStartupComplete());
         state.put("startupPhase", startupRunner.getStartupPhase());
         state.put("backtestRunning", analysisService.isBacktestRunning());
+        state.put("pendingOrders", positionManager.pendingOrderCount());
         return ResponseEntity.ok(state);
     }
 
@@ -102,6 +107,7 @@ public class ScalpController {
         List<OpenPosition> positions = positionManager.getOpenPositions();
         state.put("openPositions", positions);
         state.put("openCount", positions.size());
+        state.put("pendingOrders", positionManager.pendingOrderCount());
         state.put("cooldowns", positionManager.getActiveCooldowns());
 
         Map<String, Object> risk = new LinkedHashMap<>();
@@ -109,8 +115,9 @@ public class ScalpController {
         risk.put("dailyStartBalance", riskService.getDailyStartBalance());
         risk.put("dailyResetTimestamp", riskService.getDailyResetTimestamp());
 
-        double balance = getEffectiveBalance();
-        RiskManagementService.RiskStatus riskStatus = riskService.checkPortfolioRisk(balance, balance);
+        double balance = orderManager.getEffectiveBalance();
+        double equity = orderManager.getEffectiveEquity();
+        RiskManagementService.RiskStatus riskStatus = riskService.checkPortfolioRisk(balance, equity);
         risk.put("availableBalance", riskStatus.getAvailableBalance());
         risk.put("totalEquity", riskStatus.getTotalEquity());
         risk.put("dailyPnl", riskStatus.getDailyPnl());
@@ -180,7 +187,7 @@ public class ScalpController {
 
     @PostMapping("/close-position/{pair}")
     public ResponseEntity<Map<String, String>> closePosition(@PathVariable String pair) {
-        log.warn("Manual close requested for {}", pair);
+        log.warn("[MANUAL] Close requested for {}", pair);
         OpenPosition pos = positionManager.getOpenPositions().stream()
                 .filter(p -> p.getPair().equals(pair))
                 .findFirst().orElse(null);
@@ -188,6 +195,7 @@ public class ScalpController {
             return ResponseEntity.notFound().build();
         }
         String key = pos.getPair() + ":" + pos.getTimeframe();
+        // closePosition handles exchange close internally when live
         positionManager.closePosition(key, pos.getCurrentPrice(), "MANUAL");
         return ResponseEntity.ok(Map.of("status", "closed", "pair", pair));
     }
@@ -212,8 +220,35 @@ public class ScalpController {
     @GetMapping("/bot/exchange/balance")
     public ResponseEntity<Map<String, Object>> botExchangeBalance() {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("mode", "dry-run");
-        result.put("balance", getEffectiveBalance());
+        if (config.isLiveTrading()) {
+            result.put("mode", "live");
+            result.put("balance", executionService.getAvailableBalance());
+            result.put("equity", executionService.getEquity());
+        } else {
+            result.put("mode", "dry-run");
+            result.put("balance", orderManager.getEffectiveBalance());
+            result.put("equity", orderManager.getEffectiveEquity());
+        }
+        return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/bot/exchange/positions")
+    public ResponseEntity<?> exchangePositions() {
+        if (!config.isLiveTrading()) {
+            return ResponseEntity.ok(Map.of("mode", "dry-run", "positions", List.of()));
+        }
+        try {
+            return ResponseEntity.ok(executionService.getExchangePositions());
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/bot/pending-orders")
+    public ResponseEntity<Map<String, Object>> pendingOrders() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", positionManager.pendingOrderCount());
+        result.put("hasPending", positionManager.hasPendingOrders());
         return ResponseEntity.ok(result);
     }
 
@@ -411,7 +446,5 @@ public class ScalpController {
 
     // ==================== Helpers ====================
 
-    private double getEffectiveBalance() {
-        return config.getDryRunBalance() + historyService.getRealizedPnlUsd();
-    }
+    // (balance/equity now handled by OrderManagerService)
 }

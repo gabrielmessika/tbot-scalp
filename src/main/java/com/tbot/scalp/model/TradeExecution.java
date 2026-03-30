@@ -26,6 +26,8 @@ public class TradeExecution {
     private String tpTriggerId;
     private String slTriggerId;
     private String exchange;
+    private String timeframe;
+    private double score;
 
     public boolean isSuccess() {
         return "FILLED".equals(status) || "DRY_RUN".equals(status);
