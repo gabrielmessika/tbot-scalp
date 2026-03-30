@@ -27,6 +27,8 @@ public class ScalpConfig {
     private List<String> backtestSessions = List.of("90:7", "60:7", "45:7", "30:7", "14:7", "7:7", "3:3", "0:3");
     private List<Double> portfolioBalances = List.of(200.0, 500.0, 1000.0, 2500.0);
     private double entrySlippagePercent = 0.03; // tighter for scalp
+    private double exitSlippagePercent = 0.04; // exit slippage (trigger→market)
+    private double takerFeePercent = 0.035; // Hyperliquid taker fee per side
 
     // ===== POSITION SIZING =====
     private double positionSizePercent = 15.0;
@@ -60,6 +62,9 @@ public class ScalpConfig {
     private boolean bollingerSqueezeEnabled = true;
     private boolean orderFlowEnabled = true;
     private boolean momentumScalpEnabled = true;
+    private boolean absorptionCandleEnabled = true;
+    private boolean nakedPocEnabled = true;
+    private boolean openingRangeBreakoutEnabled = true;
 
     private Map<String, Double> strategyWeights = new HashMap<>(Map.of(
             "EMA Crossover", 2.0,
@@ -67,7 +72,10 @@ public class ScalpConfig {
             "VWAP Bounce", 3.0,
             "Bollinger Squeeze", 2.5,
             "Order Flow", 3.5,
-            "Momentum Scalp", 3.0));
+            "Momentum Scalp", 3.0,
+            "Absorption Candle", 2.5,
+            "Naked POC", 2.5,
+            "Opening Range Breakout", 3.0));
 
     // ===== TIMEFRAME SETTINGS =====
     private Map<String, TimeframeSettings> timeframeSettings = new HashMap<>();

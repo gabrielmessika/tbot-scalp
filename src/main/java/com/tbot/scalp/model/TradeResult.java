@@ -1,5 +1,8 @@
 package com.tbot.scalp.model;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -15,6 +18,8 @@ public class TradeResult {
     private String pair;
     private String timeframe;
     private String direction;
+    @Builder.Default
+    private List<String> strategies = new ArrayList<>();
     private double entryPrice;
     private double exitPrice;
     private double stopLoss;

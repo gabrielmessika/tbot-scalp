@@ -207,6 +207,9 @@ public class AnalysisService {
             case "Bollinger Squeeze" -> config.isBollingerSqueezeEnabled();
             case "Order Flow" -> config.isOrderFlowEnabled();
             case "Momentum Scalp" -> config.isMomentumScalpEnabled();
+            case "Absorption Candle" -> config.isAbsorptionCandleEnabled();
+            case "Naked POC" -> config.isNakedPocEnabled();
+            case "Opening Range Breakout" -> config.isOpeningRangeBreakoutEnabled();
             default -> true;
         };
     }
@@ -254,6 +257,10 @@ public class AnalysisService {
         String[] parts = spec.split(":");
         if (parts[0].contains("-")) {
             return parts.length > 2 ? parts[2] : "S" + parts[0];
+        }
+        // Support optional label for numeric specs too (e.g. "0:3:Current")
+        if (parts.length > 2) {
+            return parts[2];
         }
         int days = Integer.parseInt(parts[0]);
         return "J-" + days + (parts.length > 1 ? " (" + parts[1] + "j)" : "");

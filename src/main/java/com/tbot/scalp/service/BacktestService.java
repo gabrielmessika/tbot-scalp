@@ -357,7 +357,7 @@ public class BacktestService {
             TradeResult tr = TradeResult.builder()
                     .entryTime(base.getEntryTime()).exitTime(base.getExitTime())
                     .pair(base.getPair()).timeframe(base.getTimeframe())
-                    .direction(base.getDirection())
+                    .direction(base.getDirection()).strategies(base.getStrategies())
                     .entryPrice(base.getEntryPrice()).exitPrice(base.getExitPrice())
                     .stopLoss(base.getStopLoss()).takeProfit(base.getTakeProfit())
                     .leverage(base.getLeverage()).positionSizeUsd(posSize)
@@ -389,17 +389,28 @@ public class BacktestService {
 
     private TradeResult buildResult(Signal signal, double entryPrice, double exitPrice,
             String result, int elapsed, boolean beApplied, long exitTime) {
+        // Apply exit slippage (always adverse)
+        double exitSlip = config.getExitSlippagePercent() / 100.0;
+        double adjustedExit = "LONG".equals(signal.getDirection())
+                ? exitPrice * (1 - exitSlip)
+                : exitPrice * (1 + exitSlip);
+
         double pnl;
         if ("LONG".equals(signal.getDirection())) {
-            pnl = (exitPrice - entryPrice) / entryPrice * 100 * signal.getLeverage();
+            pnl = (adjustedExit - entryPrice) / entryPrice * 100 * signal.getLeverage();
         } else {
-            pnl = (entryPrice - exitPrice) / entryPrice * 100 * signal.getLeverage();
+            pnl = (entryPrice - adjustedExit) / entryPrice * 100 * signal.getLeverage();
         }
+
+        // Deduct round-trip taker fees (entry + exit)
+        double feePercent = config.getTakerFeePercent() / 100.0;
+        double feeCost = feePercent * 2 * signal.getLeverage() * 100; // as % of capital
+        pnl -= feeCost;
 
         return TradeResult.builder()
                 .entryTime(signal.getTimestamp()).exitTime(exitTime)
                 .pair(signal.getPair()).timeframe(signal.getTimeframe())
-                .direction(signal.getDirection())
+                .direction(signal.getDirection()).strategies(signal.getStrategies())
                 .entryPrice(entryPrice).exitPrice(exitPrice)
                 .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
                 .leverage(signal.getLeverage())
@@ -413,7 +424,7 @@ public class BacktestService {
         return TradeResult.builder()
                 .entryTime(signal.getTimestamp()).exitTime(signal.getTimestamp())
                 .pair(signal.getPair()).timeframe(signal.getTimeframe())
-                .direction(signal.getDirection())
+                .direction(signal.getDirection()).strategies(signal.getStrategies())
                 .entryPrice(signal.getEntryPrice()).exitPrice(signal.getEntryPrice())
                 .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
                 .leverage(signal.getLeverage()).score(signal.getScore())
@@ -425,7 +436,7 @@ public class BacktestService {
         return TradeResult.builder()
                 .entryTime(base.getEntryTime()).exitTime(base.getEntryTime())
                 .pair(base.getPair()).timeframe(base.getTimeframe())
-                .direction(base.getDirection())
+                .direction(base.getDirection()).strategies(base.getStrategies())
                 .entryPrice(base.getEntryPrice()).exitPrice(base.getEntryPrice())
                 .stopLoss(base.getStopLoss()).takeProfit(base.getTakeProfit())
                 .leverage(base.getLeverage()).score(base.getScore())

@@ -102,16 +102,19 @@ function renderPortfolioTrades(pf) {
 
     pf.trades.forEach((t, i) => {
         const dirCls = t.direction === 'LONG' ? 'badge-long' : 'badge-short';
+        const isSkipped = !!t.skipReason || (t.result && t.result.includes('Skipped'));
         const resCls = t.result?.includes('TP') || t.result?.includes('✅') ? 'badge-tp'
             : t.result?.includes('SL') || t.result?.includes('❌') ? 'badge-sl'
-                : t.result?.includes('TIMEOUT') ? 'badge-timeout'
-                    : t.result?.includes('TREND') ? 'badge-trend'
-                        : 'badge-pending';
+                : t.result?.includes('Timeout') || t.result?.includes('⏰') ? 'badge-timeout'
+                    : t.result?.includes('Trend') || t.result?.includes('↩') ? 'badge-trend'
+                        : isSkipped ? 'badge-skipped'
+                            : 'badge-pending';
         const pCls = pnlClass(t.pnl);
-        const rowCls = t.skipped ? 'opacity-50' : '';
+        const rowCls = isSkipped ? 'opacity-50' : '';
 
         const entryDate = t.entryTime ? new Date(t.entryTime).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
         const exitDate = t.exitTime ? new Date(t.exitTime).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
+        const bal = t.balanceAfter != null ? t.balanceAfter.toLocaleString('en-US', { minimumFractionDigits: 2 }) + '$' : '—';
 
         const tr = document.createElement('tr');
         tr.className = rowCls;
@@ -120,15 +123,15 @@ function renderPortfolioTrades(pf) {
             <td class="fw-bold">${t.pair}</td>
             <td><span class="badge bg-secondary">${t.timeframe}</span></td>
             <td><span class="badge ${dirCls}">${t.direction}</span></td>
-            <td class="small">${(t.strategies || []).join(', ')}</td>
+            <td class="small">${(t.strategies || []).join(', ') || '—'}</td>
             <td>${formatPrice(t.entryPrice)}</td>
             <td class="text-danger">${formatPrice(t.stopLoss)}</td>
             <td class="text-success">${formatPrice(t.takeProfit)}</td>
-            <td>${t.skipped ? '-' : formatPrice(t.exitPrice)}</td>
+            <td>${isSkipped ? '—' : formatPrice(t.exitPrice)}</td>
             <td>x${t.leverage}</td>
-            <td><span class="badge ${resCls}">${(t.result || '').replace(/[✅❌⏰📈🔁]/g, '').trim()}</span></td>
-            <td class="${pCls}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}$</td>
-            <td>${t.balanceBeforeTrade.toLocaleString('en-US', { minimumFractionDigits: 2 })}$</td>
+            <td><span class="badge ${resCls}" title="${t.skipReason || ''}">${(t.result || '').replace(/[✅❌⏰📈🔁↩🚫⏳]/g, '').trim()}</span></td>
+            <td class="${pCls}">${t.pnl != null ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) + '$' : '—'}</td>
+            <td>${bal}</td>
             <td class="small">${entryDate}</td>
             <td class="small">${exitDate}</td>
             <td>${t.score}</td>
@@ -158,10 +161,10 @@ export function exportBacktestCSV() {
     rows.push([], [], ['=== BY STRATEGY ==='], []);
     const stratMap = {};
     for (const s of bt.sessions) for (const p of s.portfolios) for (const t of p.trades) {
-        if (t.skipped) continue;
-        const key = (t.strategies || []).sort().join('+');
+        if (t.skipReason || (t.result && t.result.includes('Skipped'))) continue;
+        const key = (t.strategies || []).sort().join('+') || 'N/A';
         if (!stratMap[key]) stratMap[key] = { w: 0, l: 0, pnl: 0, n: 0 };
-        stratMap[key].n++; stratMap[key].pnl += t.pnl;
+        stratMap[key].n++; stratMap[key].pnl += (t.pnl || 0);
         if (t.result?.includes('✅') || t.result?.includes('TP')) stratMap[key].w++;
         else if (t.result?.includes('❌') || t.result?.includes('SL')) stratMap[key].l++;
     }
@@ -175,9 +178,9 @@ export function exportBacktestCSV() {
     rows.push([], [], ['=== BY PAIR ==='], []);
     const pairMap = {};
     for (const s of bt.sessions) for (const p of s.portfolios) for (const t of p.trades) {
-        if (t.skipped) continue;
+        if (t.skipReason || (t.result && t.result.includes('Skipped'))) continue;
         if (!pairMap[t.pair]) pairMap[t.pair] = { w: 0, l: 0, pnl: 0, n: 0 };
-        pairMap[t.pair].n++; pairMap[t.pair].pnl += t.pnl;
+        pairMap[t.pair].n++; pairMap[t.pair].pnl += (t.pnl || 0);
         if (t.result?.includes('✅') || t.result?.includes('TP')) pairMap[t.pair].w++;
         else if (t.result?.includes('❌') || t.result?.includes('SL')) pairMap[t.pair].l++;
     }
