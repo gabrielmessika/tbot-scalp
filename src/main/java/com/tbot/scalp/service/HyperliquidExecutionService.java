@@ -31,8 +31,10 @@ import lombok.extern.slf4j.Slf4j;
  * - SL cancel+replace on break-even trigger
  *
  * Known issues from t-bot (pre-empted here):
- * - RestTemplate must have 30s timeout (blocks scheduler thread indefinitely otherwise)
- * - getOpenPositions() must propagate exceptions (not swallow) to avoid false SL_HIT
+ * - RestTemplate must have 30s timeout (blocks scheduler thread indefinitely
+ * otherwise)
+ * - getOpenPositions() must propagate exceptions (not swallow) to avoid false
+ * SL_HIT
  * - Trigger order responses must be checked for "err" status
  * - Rate limit 429: candleSnapshot=20+, meta/openOrders=20, allMids=2
  */
@@ -44,17 +46,21 @@ public class HyperliquidExecutionService {
     private final ScalpConfig config;
     private final HyperliquidSigner signer;
     private final HyperliquidMarketDataService marketDataService;
+    private final HyperliquidRateLimiter rateLimiter;
     private final RestTemplate restTemplate;
 
     // Pending limit orders: clientOrderId → PendingOrder
     private final Map<String, PendingOrder> pendingOrders = new ConcurrentHashMap<>();
 
-    public HyperliquidExecutionService(ScalpConfig config, HyperliquidMarketDataService marketDataService) {
+    public HyperliquidExecutionService(ScalpConfig config, HyperliquidMarketDataService marketDataService,
+            HyperliquidRateLimiter rateLimiter) {
         this.config = config;
         this.marketDataService = marketDataService;
+        this.rateLimiter = rateLimiter;
 
         // RestTemplate with 30s timeout — CRITICAL: default has no timeout,
-        // which blocks the scheduler thread indefinitely on slow/hanging requests (t-bot bug #14)
+        // which blocks the scheduler thread indefinitely on slow/hanging requests
+        // (t-bot bug #14)
         var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(30_000);
         factory.setReadTimeout(30_000);
@@ -76,14 +82,17 @@ public class HyperliquidExecutionService {
     public double getAvailableBalance() {
         try {
             String wallet = walletAddress();
-            if (wallet == null) return config.getDryRunBalance();
+            if (wallet == null)
+                return config.getDryRunBalance();
             Map<String, Object> req = new LinkedHashMap<>();
             req.put("type", "clearinghouseState");
             req.put("user", wallet);
             Map<String, Object> res = postInfo(req);
-            if (res == null) return 0;
+            if (res == null)
+                return 0;
             Map<String, Object> marginSummary = (Map<String, Object>) res.get("marginSummary");
-            if (marginSummary == null) return 0;
+            if (marginSummary == null)
+                return 0;
             double accountValue = toDouble(marginSummary.get("accountValue"));
             double totalMarginUsed = toDouble(marginSummary.get("totalMarginUsed"));
             return accountValue - totalMarginUsed;
@@ -96,14 +105,17 @@ public class HyperliquidExecutionService {
     public double getEquity() {
         try {
             String wallet = walletAddress();
-            if (wallet == null) return config.getDryRunBalance();
+            if (wallet == null)
+                return config.getDryRunBalance();
             Map<String, Object> req = new LinkedHashMap<>();
             req.put("type", "clearinghouseState");
             req.put("user", wallet);
             Map<String, Object> res = postInfo(req);
-            if (res == null) return 0;
+            if (res == null)
+                return 0;
             Map<String, Object> marginSummary = (Map<String, Object>) res.get("marginSummary");
-            if (marginSummary == null) return 0;
+            if (marginSummary == null)
+                return 0;
             return toDouble(marginSummary.get("accountValue"));
         } catch (Exception e) {
             log.warn("[EXECUTION] Failed to fetch equity: {}", e.getMessage());
@@ -115,10 +127,12 @@ public class HyperliquidExecutionService {
 
     /**
      * Place a GTC limit order at the signal price (maker — no slippage, rebate).
-     * If the limit crosses the book (price better than market), it fills immediately.
+     * If the limit crosses the book (price better than market), it fills
+     * immediately.
      *
      * Returns:
-     * - PENDING_FILL if order rests in the book (polled later by checkPendingOrders)
+     * - PENDING_FILL if order rests in the book (polled later by
+     * checkPendingOrders)
      * - FILLED if order fills immediately (TP/SL placed right away)
      * - REJECTED on error
      */
@@ -152,7 +166,8 @@ public class HyperliquidExecutionService {
                 return buildRejected(order, "Quantity rounds to 0");
             }
 
-            // Limit price = signal entry price (we want to be maker, so post at signal price)
+            // Limit price = signal entry price (we want to be maker, so post at signal
+            // price)
             double limitPx = order.getEntryPrice();
 
             long nonce = Instant.now().toEpochMilli();
@@ -170,15 +185,18 @@ public class HyperliquidExecutionService {
             action.put("grouping", "na");
 
             Map<String, Object> response = postExchange(action, nonce);
-            if (response == null) return buildRejected(order, "API returned null");
+            if (response == null)
+                return buildRejected(order, "API returned null");
             if ("err".equals(response.get("status"))) {
                 return buildRejected(order, "API error: " + response.get("response"));
             }
 
             // Check if immediately filled or resting
             OrderResult orderResult = parseOrderResult(response);
-            if (orderResult == null) return buildRejected(order, "Could not parse order response");
-            if (orderResult.error != null) return buildRejected(order, orderResult.error);
+            if (orderResult == null)
+                return buildRejected(order, "Could not parse order response");
+            if (orderResult.error != null)
+                return buildRejected(order, orderResult.error);
 
             if (orderResult.immediatelyFilled) {
                 // Limit order crossed the book — filled immediately (acts like taker)
@@ -274,7 +292,8 @@ public class HyperliquidExecutionService {
             // Check if filled via clearinghouseState
             try {
                 double fillPrice = checkOrderFilled(pending.order.getPair(), pending.oid);
-                if (fillPrice <= 0) continue; // still resting
+                if (fillPrice <= 0)
+                    continue; // still resting
 
                 pendingOrders.remove(clientOid);
                 log.info("[EXECUTION] Limit order FILLED {} {} @ fill={} (signal={})",
@@ -329,24 +348,28 @@ public class HyperliquidExecutionService {
     /**
      * Returns actual fill price if order is fully filled, 0 otherwise.
      * Checks via userFillsByTime (recent fills).
-     * Matches by OID only — matching by coin would false-match fills from other orders.
+     * Matches by OID only — matching by coin would false-match fills from other
+     * orders.
      */
     private double checkOrderFilled(String pair, String oid) {
         try {
             String wallet = walletAddress();
-            if (wallet == null) return 0;
+            if (wallet == null)
+                return 0;
             long since = System.currentTimeMillis() - 300_000L; // last 5 min
             Map<String, Object> req = new LinkedHashMap<>();
             req.put("type", "userFillsByTime");
             req.put("user", wallet);
             req.put("startTime", since);
             List<Map<String, Object>> fills = postInfoList(req);
-            if (fills == null) return 0;
+            if (fills == null)
+                return 0;
             for (Map<String, Object> fill : fills) {
                 String fillOid = String.valueOf(fill.getOrDefault("oid", ""));
                 if (oid.equals(fillOid)) {
                     double px = toDouble(fill.get("px"));
-                    if (px > 0) return px;
+                    if (px > 0)
+                        return px;
                 }
             }
         } catch (Exception e) {
@@ -362,7 +385,8 @@ public class HyperliquidExecutionService {
      * Returns FILLED on success, REJECTED otherwise.
      */
     public TradeExecution placeMarketEntry(TradeOrder order) {
-        if (signer == null) return buildRejected(order, "No private key configured");
+        if (signer == null)
+            return buildRejected(order, "No private key configured");
         boolean isBuy = "LONG".equals(order.getDirection());
         try {
             int assetIndex = marketDataService.getAssetIndex(order.getPair());
@@ -376,7 +400,8 @@ public class HyperliquidExecutionService {
 
             double qty = BigDecimal.valueOf(order.getQuantity())
                     .setScale(szDecimals, RoundingMode.DOWN).doubleValue();
-            if (qty <= 0) return buildRejected(order, "Quantity rounds to 0");
+            if (qty <= 0)
+                return buildRejected(order, "Quantity rounds to 0");
 
             long nonce = Instant.now().toEpochMilli();
             Map<String, Object> orderSpec = new LinkedHashMap<>();
@@ -393,11 +418,14 @@ public class HyperliquidExecutionService {
             action.put("grouping", "na");
 
             Map<String, Object> response = postExchange(action, nonce);
-            if (response == null) return buildRejected(order, "API returned null");
-            if ("err".equals(response.get("status"))) return buildRejected(order, "API error: " + response.get("response"));
+            if (response == null)
+                return buildRejected(order, "API returned null");
+            if ("err".equals(response.get("status")))
+                return buildRejected(order, "API error: " + response.get("response"));
 
             String oid = extractOid(response);
-            if (oid == null) return buildRejected(order, "Could not extract OID");
+            if (oid == null)
+                return buildRejected(order, "Could not extract OID");
 
             // Place TP/SL immediately (market entry fills right away)
             double adjTp = order.getTakeProfit();
@@ -407,7 +435,8 @@ public class HyperliquidExecutionService {
                 adjTp = order.getTakeProfit() * ratio;
                 adjSl = order.getStopLoss() * ratio;
             }
-            String[] triggerOids = placeTriggerOrders(assetIndex, isBuy, qty, szDecimals, adjTp, adjSl, order.getPair());
+            String[] triggerOids = placeTriggerOrders(assetIndex, isBuy, qty, szDecimals, adjTp, adjSl,
+                    order.getPair());
 
             log.info("[EXECUTION] Market entry FILLED {} {} @ ~{}", order.getDirection(), order.getPair(), midPrice);
             return TradeExecution.builder()
@@ -441,13 +470,16 @@ public class HyperliquidExecutionService {
      * Close a position with a market order (IOC limit with slippage).
      */
     public boolean closePosition(OpenPosition pos) {
-        if (signer == null) return false;
+        if (signer == null)
+            return false;
         String coin = toHyperliquidCoin(pos.getPair());
         boolean isBuy = "SHORT".equals(pos.getDirection()); // opposite to close
         try {
             // Cancel existing TP/SL triggers first
-            if (pos.getTpTriggerId() != null) cancelOrder(pos.getPair(), pos.getTpTriggerId());
-            if (pos.getSlTriggerId() != null) cancelOrder(pos.getPair(), pos.getSlTriggerId());
+            if (pos.getTpTriggerId() != null)
+                cancelOrder(pos.getPair(), pos.getTpTriggerId());
+            if (pos.getSlTriggerId() != null)
+                cancelOrder(pos.getPair(), pos.getSlTriggerId());
 
             int assetIndex = marketDataService.getAssetIndex(pos.getPair());
             int szDecimals = marketDataService.getSzDecimals(pos.getPair());
@@ -489,13 +521,15 @@ public class HyperliquidExecutionService {
      * Returns new SL trigger OID or null on failure.
      */
     public String updateStopLoss(OpenPosition pos, double newSlPrice) {
-        if (signer == null) return null;
+        if (signer == null)
+            return null;
         try {
             // Cancel old SL trigger (t-bot bug #7: BE not updated on exchange)
             if (pos.getSlTriggerId() != null) {
                 boolean cancelled = cancelOrder(pos.getPair(), pos.getSlTriggerId());
                 if (!cancelled) {
-                    log.warn("[EXECUTION] Could not cancel old SL trigger {} for {}", pos.getSlTriggerId(), pos.getPair());
+                    log.warn("[EXECUTION] Could not cancel old SL trigger {} for {}", pos.getSlTriggerId(),
+                            pos.getPair());
                 }
             }
 
@@ -519,7 +553,8 @@ public class HyperliquidExecutionService {
     // ==================== Cancel Order ====================
 
     public boolean cancelOrder(String pair, String oid) {
-        if (signer == null || oid == null) return false;
+        if (signer == null || oid == null)
+            return false;
         try {
             int assetIndex = marketDataService.getAssetIndex(pair);
             long nonce = Instant.now().toEpochMilli();
@@ -548,18 +583,22 @@ public class HyperliquidExecutionService {
      * Fetch open positions directly from exchange.
      * Used at startup for position recovery and for periodic reconciliation.
      * IMPORTANT: throws exception on API error — never return empty list on error
-     * (t-bot bug #13: empty list was interpreted as "all positions closed" → false SL_HIT)
+     * (t-bot bug #13: empty list was interpreted as "all positions closed" → false
+     * SL_HIT)
      */
     public List<Map<String, Object>> getExchangePositions() throws Exception {
         String wallet = walletAddress();
-        if (wallet == null) return List.of();
+        if (wallet == null)
+            return List.of();
         Map<String, Object> req = new LinkedHashMap<>();
         req.put("type", "clearinghouseState");
         req.put("user", wallet);
         Map<String, Object> res = postInfo(req);
-        if (res == null) throw new RuntimeException("clearinghouseState returned null");
+        if (res == null)
+            throw new RuntimeException("clearinghouseState returned null");
         List<Map<String, Object>> positions = (List<Map<String, Object>>) res.get("assetPositions");
-        if (positions == null) return List.of();
+        if (positions == null)
+            return List.of();
         return positions.stream()
                 .filter(p -> {
                     Map<String, Object> pos = (Map<String, Object>) p.get("position");
@@ -654,7 +693,8 @@ public class HyperliquidExecutionService {
                     return null;
                 }
                 Map<String, Object> resting = (Map<String, Object>) s.get("resting");
-                if (resting != null) return String.valueOf(resting.get("oid"));
+                if (resting != null)
+                    return String.valueOf(resting.get("oid"));
             }
         } catch (Exception e) {
             log.warn("[EXECUTION] Could not parse {} trigger OID for {}: {}", type, pair, e.getMessage());
@@ -681,7 +721,9 @@ public class HyperliquidExecutionService {
     // ==================== HTTP ====================
 
     private Map<String, Object> postExchange(Map<String, Object> action, long nonce) {
-        if (signer == null) throw new RuntimeException("No signer — private key not configured");
+        if (signer == null)
+            throw new RuntimeException("No signer — private key not configured");
+        rateLimiter.acquireExchange();
         String url = config.getHyperliquidApiUrl() + "/exchange";
         Map<String, Object> signed = signer.buildSignedRequest(action, nonce);
         HttpHeaders headers = new HttpHeaders();
@@ -690,6 +732,7 @@ public class HyperliquidExecutionService {
     }
 
     private Map<String, Object> postInfo(Map<String, Object> body) {
+        rateLimiter.acquireInfo();
         String url = config.getHyperliquidApiUrl() + "/info";
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -697,6 +740,7 @@ public class HyperliquidExecutionService {
     }
 
     private List<Map<String, Object>> postInfoList(Map<String, Object> body) {
+        rateLimiter.acquireInfo();
         String url = config.getHyperliquidApiUrl() + "/info";
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -724,23 +768,28 @@ public class HyperliquidExecutionService {
     }
 
     /**
-     * Parse Hyperliquid order response — distinguishes resting (in book) from immediate fill.
+     * Parse Hyperliquid order response — distinguishes resting (in book) from
+     * immediate fill.
      */
     private OrderResult parseOrderResult(Map<String, Object> response) {
         try {
-            Map<String, Object> data = (Map<String, Object>) ((Map<String, Object>) response.get("response")).get("data");
+            Map<String, Object> data = (Map<String, Object>) ((Map<String, Object>) response.get("response"))
+                    .get("data");
             List<Map<String, Object>> statuses = (List<Map<String, Object>>) data.get("statuses");
-            if (statuses == null || statuses.isEmpty()) return null;
+            if (statuses == null || statuses.isEmpty())
+                return null;
             Map<String, Object> s = statuses.get(0);
             if (s.containsKey("error")) {
                 return new OrderResult(null, false, String.valueOf(s.get("error")));
             }
             // GTC order rests in book
             Map<String, Object> resting = (Map<String, Object>) s.get("resting");
-            if (resting != null) return new OrderResult(String.valueOf(resting.get("oid")), false, null);
+            if (resting != null)
+                return new OrderResult(String.valueOf(resting.get("oid")), false, null);
             // Immediately filled (price was better than limit)
             Map<String, Object> filled = (Map<String, Object>) s.get("filled");
-            if (filled != null) return new OrderResult(String.valueOf(filled.get("oid")), true, null);
+            if (filled != null)
+                return new OrderResult(String.valueOf(filled.get("oid")), true, null);
         } catch (Exception e) {
             log.warn("[EXECUTION] parseOrderResult failed: {}", e.getMessage());
         }
@@ -755,13 +804,20 @@ public class HyperliquidExecutionService {
 
     private String walletAddress() {
         String configured = config.getHyperliquidWalletAddress();
-        if (configured != null && !configured.isBlank()) return configured;
+        if (configured != null && !configured.isBlank())
+            return configured;
         return signer != null ? signer.getAddress() : null;
     }
 
     private static double toDouble(Object o) {
-        if (o instanceof Number n) return n.doubleValue();
-        if (o instanceof String s) { try { return Double.parseDouble(s); } catch (Exception ignored) {} }
+        if (o instanceof Number n)
+            return n.doubleValue();
+        if (o instanceof String s) {
+            try {
+                return Double.parseDouble(s);
+            } catch (Exception ignored) {
+            }
+        }
         return 0;
     }
 
@@ -793,6 +849,9 @@ public class HyperliquidExecutionService {
 
     // ==================== Inner Classes ====================
 
-    private record PendingOrder(TradeOrder order, String oid, double filledQty, int leverage, long expiresAt) {}
-    private record OrderResult(String oid, boolean immediatelyFilled, String error) {}
+    private record PendingOrder(TradeOrder order, String oid, double filledQty, int leverage, long expiresAt) {
+    }
+
+    private record OrderResult(String oid, boolean immediatelyFilled, String error) {
+    }
 }

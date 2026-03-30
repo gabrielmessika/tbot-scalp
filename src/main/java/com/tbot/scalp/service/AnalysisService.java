@@ -146,11 +146,21 @@ public class AnalysisService {
                         continue;
 
                     List<Signal> signals = detectAndScore(candles, coin, tf);
-                    // Filter to recent signals only
+                    // Filter to recent signals only + price drift check (t-bot pattern)
                     int maxAge = config.getMaxSignalAgeCandlesLive();
                     int minIdx = candles.size() - maxAge;
+                    double currentPrice = candles.get(candles.size() - 1).getClose();
                     signals.stream()
                             .filter(s -> s.getCandleIndex() >= minIdx)
+                            .filter(s -> {
+                                double drift = Math.abs(s.getEntryPrice() - currentPrice) / currentPrice;
+                                if (drift > 0.015) {
+                                    log.debug("Filtered signal {} {} — price drift {}% > 1.5%",
+                                            s.getDirection(), coin, String.format("%.1f", drift * 100));
+                                    return false;
+                                }
+                                return true;
+                            })
                             .forEach(s -> {
                                 alerts.add(s);
                                 logEntry(logs, "SIGNAL", s.getFormattedAlert());

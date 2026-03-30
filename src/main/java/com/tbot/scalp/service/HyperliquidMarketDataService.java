@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
@@ -28,21 +27,13 @@ import lombok.extern.slf4j.Slf4j;
 public class HyperliquidMarketDataService {
 
     private final ScalpConfig config;
+    private final HyperliquidRateLimiter rateLimiter;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private RestTemplate restTemplate;
 
     private final Map<String, Integer> coinToIndex = new ConcurrentHashMap<>();
     private final Map<Integer, Integer> assetToSzDecimals = new ConcurrentHashMap<>();
     private final Map<Integer, Integer> assetToMaxLeverage = new ConcurrentHashMap<>();
-
-    // Rate limiting: 1200 weight/min budget
-    // candleSnapshot = 20 (base) + ceil(candles/60) — official Hyperliquid weights
-    // allMids/clearinghouseState = 2 ; meta/openOrders = 20
-    private static final int RATE_BUDGET = 1200;
-    private static final long RATE_WINDOW_MS = 60_000L;
-    private static final int INFO_WEIGHT = 2;
-    private final AtomicLong rateWindowStart = new AtomicLong(0);
-    private final AtomicLong rateUsed = new AtomicLong(0);
 
     @PostConstruct
     public void init() {
@@ -54,7 +45,7 @@ public class HyperliquidMarketDataService {
 
     public void refreshMeta() {
         try {
-            acquireRate(20); // meta is a heavy info request
+            rateLimiter.acquireInfoHeavy();
             String body = "{\"type\":\"meta\"}";
             String response = postInfo(body);
             JsonNode root = objectMapper.readTree(response);
@@ -94,8 +85,7 @@ public class HyperliquidMarketDataService {
             while (cursor < endMs) {
                 long chunkEnd = Math.min(cursor + chunkMs, endMs);
                 long estimatedCandles = Math.min(500L, (chunkEnd - cursor) / intervalMs);
-                int candleWeight = 20 + (int) Math.max(1, Math.ceil(estimatedCandles / 60.0));
-                acquireRate(candleWeight);
+                rateLimiter.acquireCandle((int) estimatedCandles);
                 String body = String.format(
                         "{\"type\":\"candleSnapshot\",\"req\":{\"coin\":\"%s\",\"interval\":\"%s\",\"startTime\":%d,\"endTime\":%d}}",
                         toHyperliquidCoin(pair), interval, cursor, chunkEnd);
@@ -130,7 +120,7 @@ public class HyperliquidMarketDataService {
 
     public double fetchCurrentPrice(String pair) {
         try {
-            acquireRate(INFO_WEIGHT);
+            rateLimiter.acquireInfo();
             String body = "{\"type\":\"allMids\"}";
             String response = postInfo(body);
             JsonNode mids = objectMapper.readTree(response);
@@ -187,30 +177,6 @@ public class HyperliquidMarketDataService {
                 String.class);
     }
 
-    private synchronized void acquireRate(int weight) {
-        long now = System.currentTimeMillis();
-        long windowStart = rateWindowStart.get();
-        if (now - windowStart >= RATE_WINDOW_MS) {
-            rateWindowStart.set(now);
-            rateUsed.set(0);
-        }
-        long used = rateUsed.get();
-        if (used + weight > RATE_BUDGET) {
-            long waitMs = RATE_WINDOW_MS - (now - rateWindowStart.get()) + 100;
-            if (waitMs > 0) {
-                log.debug("Rate limit: waiting {}ms (used {}/{})", waitMs, used, RATE_BUDGET);
-                try {
-                    Thread.sleep(waitMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-            rateWindowStart.set(System.currentTimeMillis());
-            rateUsed.set(0);
-        }
-        rateUsed.addAndGet(weight);
-    }
-
     private org.springframework.http.HttpHeaders jsonHeaders() {
         var headers = new org.springframework.http.HttpHeaders();
         headers.set("Content-Type", "application/json");
@@ -257,8 +223,7 @@ public class HyperliquidMarketDataService {
             while (cursor < endMs) {
                 long chunkEnd = Math.min(cursor + chunkMs, endMs);
                 long estimatedCandles = Math.min(500L, (chunkEnd - cursor) / intervalMs);
-                int candleWeight = 20 + (int) Math.max(1, Math.ceil(estimatedCandles / 60.0));
-                acquireRate(candleWeight);
+                rateLimiter.acquireCandle((int) estimatedCandles);
                 String body = String.format(
                         "{\"type\":\"candleSnapshot\",\"req\":{\"coin\":\"%s\",\"interval\":\"%s\",\"startTime\":%d,\"endTime\":%d}}",
                         toHyperliquidCoin(pair), interval, cursor, chunkEnd);
