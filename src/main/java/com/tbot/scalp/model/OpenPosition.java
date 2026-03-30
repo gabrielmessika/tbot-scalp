@@ -23,6 +23,7 @@ public class OpenPosition {
     private double currentPnlPercent;
     private int candlesElapsed;
     private boolean breakEvenApplied;
+    private int beLevel; // 0=none, 1=entry, 2=25%TP, 3=50%TP
     private String clientOrderId;
     private String exchangeOrderId;
     private String tpTriggerId;

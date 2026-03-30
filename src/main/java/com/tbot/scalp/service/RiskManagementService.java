@@ -5,11 +5,12 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
+import com.tbot.scalp.config.ScalpConfig;
+import com.tbot.scalp.model.Signal;
+
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import com.tbot.scalp.config.ScalpConfig;
-import com.tbot.scalp.model.Signal;
 
 @Slf4j
 @Service
@@ -124,6 +125,10 @@ public class RiskManagementService {
 
     public double getDailyStartBalance() {
         return dailyStartBalance;
+    }
+
+    public long getDailyResetTimestamp() {
+        return dailyResetTimestamp;
     }
 
     public void initEquity(double equity) {

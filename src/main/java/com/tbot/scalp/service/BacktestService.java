@@ -10,8 +10,6 @@ import java.util.Set;
 
 import org.springframework.stereotype.Service;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import com.tbot.scalp.config.ScalpConfig;
 import com.tbot.scalp.model.BacktestSession;
 import com.tbot.scalp.model.BacktestSummary;
@@ -19,6 +17,9 @@ import com.tbot.scalp.model.Candle;
 import com.tbot.scalp.model.PortfolioBacktest;
 import com.tbot.scalp.model.Signal;
 import com.tbot.scalp.model.TradeResult;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Walk-forward backtest engine for scalp signals.
@@ -98,6 +99,7 @@ public class BacktestService {
         Double trailingMult = tfSettings.getTrailingStopAtrMult();
 
         boolean breakEvenApplied = false;
+        int beLevel = 0;
         double[] atr = indicatorService.calculateATR(candles, config.getAtrPeriod());
         double[] ema5 = indicatorService.calculateEMA(candles, 5);
         double[] ema13 = indicatorService.calculateEMA(candles, 13);
@@ -142,8 +144,8 @@ public class BacktestService {
                 }
             }
 
-            // Break-even check
-            if (!breakEvenApplied) {
+            // Progressive break-even (3 levels)
+            {
                 double tpDist = Math.abs(tp - entryPrice);
                 double progress;
                 if ("LONG".equals(signal.getDirection())) {
@@ -151,8 +153,26 @@ public class BacktestService {
                 } else {
                     progress = (entryPrice - c.getClose()) / tpDist * 100;
                 }
-                if (progress >= bePercent) {
-                    sl = entryPrice;
+                boolean isLong = "LONG".equals(signal.getDirection());
+                double newSl;
+
+                if (progress >= bePercent + 25 && beLevel < 3) {
+                    newSl = isLong ? entryPrice + 0.5 * tpDist : entryPrice - 0.5 * tpDist;
+                    if (isLong ? newSl > sl : newSl < sl)
+                        sl = newSl;
+                    beLevel = 3;
+                    breakEvenApplied = true;
+                } else if (progress >= bePercent + 15 && beLevel < 2) {
+                    newSl = isLong ? entryPrice + 0.25 * tpDist : entryPrice - 0.25 * tpDist;
+                    if (isLong ? newSl > sl : newSl < sl)
+                        sl = newSl;
+                    beLevel = 2;
+                    breakEvenApplied = true;
+                } else if (progress >= bePercent && beLevel < 1) {
+                    newSl = entryPrice;
+                    if (isLong ? newSl > sl : newSl < sl)
+                        sl = newSl;
+                    beLevel = 1;
                     breakEvenApplied = true;
                 }
             }

@@ -2,15 +2,20 @@ package com.tbot.scalp.service;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tbot.scalp.model.TradeExecution;
 
 import lombok.extern.slf4j.Slf4j;
-import com.tbot.scalp.model.TradeExecution;
 
 @Slf4j
 @Service
@@ -54,5 +59,32 @@ public class TradeJournalService {
         } catch (Exception e) {
             log.error("Failed to record trade journal: {}", e.getMessage());
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> readAllParsed() {
+        List<Map<String, Object>> all = new ArrayList<>();
+        File dir = new File("./journal");
+        if (!dir.exists())
+            return all;
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".jsonl"));
+        if (files == null)
+            return all;
+        // Sort by name desc (most recent file first)
+        java.util.Arrays.sort(files, (a, b) -> b.getName().compareTo(a.getName()));
+        for (File f : files) {
+            try {
+                List<String> lines = Files.readAllLines(f.toPath());
+                for (String line : lines) {
+                    if (line.isBlank())
+                        continue;
+                    all.add(mapper.readValue(line, Map.class));
+                }
+            } catch (Exception e) {
+                log.warn("Failed to parse journal file {}: {}", f.getName(), e.getMessage());
+            }
+        }
+        Collections.reverse(all);
+        return all;
     }
 }

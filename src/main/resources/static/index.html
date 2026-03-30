@@ -1,119 +1,439 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>T-Bot Scalp</title>
+    <title>T-Bot Scalp - Futures Scalping</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link href="css/styles.css" rel="stylesheet">
+    <link rel="stylesheet" href="./css/styles.css">
 </head>
 
 <body>
+    <!-- Loading Overlay -->
+    <div id="loading-overlay">
+        <output class="spinner-border text-warning" style="width:3rem;height:3rem;"></output>
+        <div id="loading-text" class="text-secondary">Analysis in progress...</div>
+    </div>
+
     <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
-        <div class="container-fluid">
-            <span class="navbar-brand">
-                <i class="bi bi-lightning-charge-fill text-warning"></i> T-Bot Scalp
-            </span>
-            <div class="d-flex gap-2 align-items-center">
-                <span id="ws-status" class="badge bg-secondary">WS: --</span>
-                <span id="mode-badge" class="badge bg-info">--</span>
-                <button class="btn btn-sm btn-outline-primary" onclick="runAnalysis()">
-                    <i class="bi bi-search"></i> Analyze
-                </button>
-                <button class="btn btn-sm btn-outline-warning" onclick="runBacktest()" id="btn-backtest">
-                    <i class="bi bi-bar-chart-line"></i> Backtest
-                </button>
-            </div>
+    <nav class="navbar navbar-dark px-4 py-3">
+        <div class="d-flex align-items-center gap-3">
+            <i class="bi bi-lightning-charge-fill" style="font-size:1.5rem;color:var(--accent-orange)"></i>
+            <span class="fw-bold fs-5">T-Bot Scalp</span>
+            <span class="text-secondary">Futures Scalping</span>
+            <span id="ws-status" class="badge bg-secondary ms-2">WS: --</span>
+        </div>
+        <div class="d-flex align-items-center gap-3">
+            <span id="last-update" class="text-secondary small"></span>
+            <span id="next-refresh" class="text-secondary small ms-3" style="min-width:120px"></span>
+            <button class="btn btn-backtest" onclick="runBacktest()" id="btn-backtest">
+                <i class="bi bi-clipboard-data me-1"></i> Run Backtest
+            </button>
+            <button class="btn btn-analyze" onclick="runAnalysis()" id="btn-analyze">
+                <i class="bi bi-bell me-1"></i> Run Analysis
+            </button>
         </div>
     </nav>
 
-    <!-- Startup Banner -->
-    <div id="startup-banner" class="alert alert-info m-3 d-none">
-        <div class="d-flex align-items-center gap-2">
-            <div class="spinner-border spinner-border-sm" role="status"></div>
-            <span id="startup-phase">Initializing...</span>
-        </div>
-    </div>
-
     <!-- Tabs -->
-    <ul class="nav nav-tabs px-3 pt-2" id="mainTabs" role="tablist">
-        <li class="nav-item">
-            <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button">
-                <i class="bi bi-terminal"></i> Logs
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link active" id="backtest-tab" data-bs-toggle="tab" data-bs-target="#backtest"
-                type="button">
-                <i class="bi bi-bar-chart-line"></i> Backtest
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" id="trades-tab" data-bs-toggle="tab" data-bs-target="#trades" type="button">
-                <i class="bi bi-arrow-left-right"></i> Trades
-                <span id="trades-badge" class="badge bg-primary d-none">0</span>
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#configPanel" type="button">
-                <i class="bi bi-gear"></i> Config
-            </button>
-        </li>
-    </ul>
-
-    <!-- Tab Content -->
-    <div class="tab-content p-3" id="mainTabContent">
-        <!-- Logs Tab -->
-        <div class="tab-pane fade" id="logs" role="tabpanel">
-            <div class="d-flex justify-content-between mb-2">
-                <input type="text" id="log-filter" class="form-control form-control-sm w-25"
-                    placeholder="Filter logs...">
-                <button class="btn btn-sm btn-outline-secondary" onclick="refreshLogs()">
-                    <i class="bi bi-arrow-clockwise"></i>
+    <div class="container-fluid px-4 mt-3">
+        <ul class="nav nav-tabs">
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-logs" role="tab">
+                    <i class="bi bi-terminal me-1"></i> Logs
                 </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-backtest" role="tab">
+                    <i class="bi bi-clipboard-data me-1"></i> Backtest
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-trades" role="tab"
+                    id="tab-trades-btn">
+                    <i class="bi bi-arrow-left-right me-1"></i> Trades
+                    <span id="trades-count-badge" class="badge bg-secondary ms-1" style="display:none">0</span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-history" role="tab"
+                    id="tab-history-btn">
+                    <i class="bi bi-clock-history me-1"></i> History
+                    <span id="history-count-badge" class="badge bg-secondary ms-1" style="display:none">0</span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-status" role="tab"
+                    id="tab-status-btn">
+                    <i class="bi bi-heart-pulse me-1"></i> Status
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-stats" role="tab">
+                    <i class="bi bi-bar-chart-line me-1"></i> Stats
+                </button>
+            </li>
+        </ul>
+
+        <!-- Startup banner -->
+        <div id="startup-banner" class="mt-3 mb-0 p-3 rounded-3"
+            style="background:rgba(240,136,62,0.08);border:1px solid rgba(240,136,62,0.25);display:none">
+            <div class="d-flex align-items-center">
+                <span class="spinner-border spinner-border-sm me-3" style="color:var(--accent-orange)"></span>
+                <div>
+                    <div class="fw-bold" style="color:var(--accent-orange)">Starting up...</div>
+                    <small id="startup-phase" class="text-secondary">Initializing...</small>
+                </div>
             </div>
-            <div id="log-output" class="log-terminal"></div>
         </div>
 
-        <!-- Backtest Tab -->
-        <div class="tab-pane fade show active" id="backtest" role="tabpanel">
-            <div id="backtest-empty" class="text-center text-muted py-5">
-                <i class="bi bi-bar-chart-line" style="font-size:3rem"></i>
-                <p class="mt-2">Click <strong>Backtest</strong> to run a walk-forward simulation</p>
-            </div>
-            <div id="backtest-loading" class="text-center py-5 d-none">
-                <div class="spinner-border text-warning" role="status"></div>
-                <p class="mt-2">Running backtest...</p>
-            </div>
-            <div id="backtest-content" class="d-none">
-                <div id="session-selector" class="mb-3"></div>
-                <div id="portfolio-selector" class="mb-3"></div>
-                <div id="comparison-table"></div>
-                <div id="portfolio-stats" class="row g-3 mb-3"></div>
-                <div id="trades-table"></div>
-            </div>
-        </div>
+        <div class="tab-content mt-3">
 
-        <!-- Trades Tab -->
-        <div class="tab-pane fade" id="trades" role="tabpanel">
-            <div id="risk-cards" class="row g-3 mb-3"></div>
-            <h6>Open Positions</h6>
-            <div id="open-positions" class="table-responsive mb-4">
-                <p class="text-muted">No open positions</p>
+            <!-- ============ LOGS TAB ============ -->
+            <div class="tab-pane fade" id="tab-logs" role="tabpanel">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span class="fw-bold"><i class="bi bi-terminal me-2"></i>Application Logs</span>
+                        <div class="d-flex align-items-center gap-2">
+                            <input type="text" id="log-filter" class="form-control form-control-sm"
+                                placeholder="Filter..." style="width:200px">
+                            <select id="log-lines" class="form-select form-select-sm" style="width:auto">
+                                <option value="100">100 lines</option>
+                                <option value="200" selected>200 lines</option>
+                                <option value="500">500 lines</option>
+                            </select>
+                            <button class="btn btn-sm btn-outline-primary" onclick="refreshLogs()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                            <div class="form-check form-switch ms-2 mb-0">
+                                <input class="form-check-input" type="checkbox" id="log-auto-scroll" checked>
+                                <label class="form-check-label small text-secondary"
+                                    for="log-auto-scroll">Auto-scroll</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <pre id="log-output" class="mb-0 p-3"
+                            style="max-height:70vh;overflow-y:auto;font-size:0.78rem;line-height:1.5;background:var(--bg-primary);color:var(--text-primary);white-space:pre-wrap;word-break:break-all"></pre>
+                    </div>
+                </div>
             </div>
-        </div>
 
-        <!-- Config Tab -->
-        <div class="tab-pane fade" id="configPanel" role="tabpanel">
-            <div id="config-content" class="text-muted">Loading config...</div>
+            <!-- ============ BACKTEST TAB ============ -->
+            <div class="tab-pane fade show active" id="tab-backtest" role="tabpanel">
+                <!-- Session selector -->
+                <div class="d-flex align-items-center gap-3 mb-3">
+                    <span class="fw-bold text-secondary">Session:</span>
+                    <div class="btn-group" id="session-selector"></div>
+                    <span class="fw-bold text-secondary ms-4">Portfolio:</span>
+                    <div class="btn-group" id="portfolio-selector"></div>
+                    <button class="btn btn-sm btn-outline-light ms-auto" onclick="exportBacktestCSV()"
+                        id="btn-export-csv" style="display:none">
+                        <i class="bi bi-download me-1"></i> Export CSV
+                    </button>
+                </div>
+
+                <!-- Comparison overview -->
+                <div class="card mb-4" id="comparison-card" style="display:none">
+                    <div class="card-header fw-bold">
+                        <i class="bi bi-bar-chart me-1"></i> Comparison — Selected Session
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Portfolio</th>
+                                        <th>Initial Balance</th>
+                                        <th>Final Balance</th>
+                                        <th>ROI</th>
+                                        <th>Win Rate</th>
+                                        <th>Trades</th>
+                                        <th>Wins</th>
+                                        <th>Losses</th>
+                                        <th>Skipped</th>
+                                        <th>Max Drawdown</th>
+                                        <th>Best Trade</th>
+                                        <th>Worst Trade</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="comparison-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Summary Stats -->
+                <div class="row g-3 mb-4" id="backtest-stats"></div>
+
+                <!-- Trade Table -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span class="fw-bold">Trade Details</span>
+                        <span id="trade-count" class="text-secondary small"></span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Pair</th>
+                                        <th>TF</th>
+                                        <th>Direction</th>
+                                        <th>Strategies</th>
+                                        <th>Entry</th>
+                                        <th>SL</th>
+                                        <th>TP</th>
+                                        <th>Exit</th>
+                                        <th>Leverage</th>
+                                        <th>Result</th>
+                                        <th>P&L</th>
+                                        <th>Avail. Balance</th>
+                                        <th>Entry Date</th>
+                                        <th>Exit Date</th>
+                                        <th>Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="trades-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ TRADES TAB ============ -->
+            <div class="tab-pane fade" id="tab-trades" role="tabpanel">
+                <!-- Execution status bar -->
+                <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+                    <div>
+                        <span class="fw-bold text-secondary me-1">Mode:</span>
+                        <span id="exec-mode-badge" class="badge badge-off">--</span>
+                    </div>
+                    <div>
+                        <span class="fw-bold text-secondary me-1">Exchange:</span>
+                        <span id="exec-exchange" class="fw-bold" style="color:var(--accent-orange)">--</span>
+                    </div>
+                    <div class="auto-refresh-indicator ms-auto">
+                        <span class="dot"></span> Auto-refresh every 10s
+                    </div>
+                </div>
+
+                <!-- Risk status cards -->
+                <div class="row g-3 mb-4" id="risk-stats"></div>
+
+                <!-- Open positions -->
+                <div class="card mb-4" id="open-positions-card" style="display:none">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span class="fw-bold"><i class="bi bi-activity me-2"></i>Open Positions</span>
+                        <span id="open-positions-count" class="text-secondary small"></span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Pair</th>
+                                        <th>Direction</th>
+                                        <th>TF</th>
+                                        <th>Entry</th>
+                                        <th>Current</th>
+                                        <th>SL</th>
+                                        <th>TP</th>
+                                        <th>Leverage</th>
+                                        <th>P&L</th>
+                                        <th>TP Progress</th>
+                                        <th>BE Level</th>
+                                        <th>Candles</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="open-positions-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade journal -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span class="fw-bold"><i class="bi bi-arrow-left-right me-2"></i>Trade Journal</span>
+                        <div class="d-flex align-items-center gap-2">
+                            <select id="trades-filter" class="form-select form-select-sm"
+                                style="width:auto;background:var(--bg-secondary);color:var(--text-primary);border-color:var(--border-color);">
+                                <option value="all">All</option>
+                                <option value="DRY_RUN">Dry-Run</option>
+                                <option value="FILLED">Filled</option>
+                                <option value="RISK_REJECTED">Rejected</option>
+                            </select>
+                            <span id="trades-total" class="text-secondary small"></span>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="trades-empty-msg" class="trades-empty" style="display:none">
+                            <i class="bi bi-inbox"></i>
+                            <p>No trades recorded yet.</p>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0" id="trades-table" style="display:none">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Pair</th>
+                                        <th>Direction</th>
+                                        <th>TF</th>
+                                        <th>Entry</th>
+                                        <th>SL</th>
+                                        <th>TP</th>
+                                        <th>Leverage</th>
+                                        <th>Score</th>
+                                        <th>Status</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="trades-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ HISTORY TAB ============ -->
+            <div class="tab-pane fade" id="tab-history" role="tabpanel">
+                <!-- Summary stats -->
+                <div class="row g-3 mb-4" id="history-stats"></div>
+
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span class="fw-bold"><i class="bi bi-clock-history me-2"></i>Closed Trades</span>
+                        <div class="d-flex align-items-center gap-2">
+                            <select id="history-filter" class="form-select form-select-sm"
+                                style="width:auto;background:var(--bg-secondary);color:var(--text-primary);border-color:var(--border-color);"
+                                onchange="renderHistoryTable(window._historyData)">
+                                <option value="all">All Reasons</option>
+                                <option value="TP_HIT">TP Hit</option>
+                                <option value="SL_HIT">SL Hit</option>
+                                <option value="TIMEOUT">Timeout</option>
+                                <option value="TREND_REVERSAL">Trend</option>
+                                <option value="CONTRARY_SIGNALS">Contrary</option>
+                                <option value="MANUAL">Manual</option>
+                            </select>
+                            <span id="history-total" class="text-secondary small"></span>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="history-empty-msg" class="trades-empty" style="display:none">
+                            <i class="bi bi-inbox"></i>
+                            <p>No closed trades yet.</p>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0" id="history-table" style="display:none">
+                                <thead>
+                                    <tr>
+                                        <th>Opened</th>
+                                        <th>Closed</th>
+                                        <th>Pair</th>
+                                        <th>Direction</th>
+                                        <th>TF</th>
+                                        <th>Entry</th>
+                                        <th>Exit</th>
+                                        <th>Leverage</th>
+                                        <th>P&L %</th>
+                                        <th>P&L $</th>
+                                        <th>Reason</th>
+                                        <th>BE</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ STATUS TAB ============ -->
+            <div class="tab-pane fade" id="tab-status" role="tabpanel">
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <h5 class="mb-0"><i class="bi bi-heart-pulse me-2"></i>Bot Status</h5>
+                    <button class="btn btn-analyze btn-sm" onclick="refreshStatus()">
+                        <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                    </button>
+                </div>
+
+                <!-- Bot state overview -->
+                <div class="row g-3 mb-4" id="status-overview"></div>
+
+                <!-- Active Configuration -->
+                <div class="mt-4">
+                    <h5 class="mb-3"><i class="bi bi-sliders me-2"></i>Active Configuration</h5>
+                    <div id="config-container">
+                        <div class="text-center text-secondary py-3">
+                            <span class="spinner-border spinner-border-sm me-2"></span>Loading...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ STATS TAB ============ -->
+            <div class="tab-pane fade" id="tab-stats" role="tabpanel">
+                <div class="d-flex align-items-center justify-content-between mb-3">
+                    <div class="d-flex align-items-center gap-3">
+                        <span class="fw-bold text-secondary">Period:</span>
+                        <div class="btn-group" id="stats-period-selector"></div>
+                    </div>
+                </div>
+
+                <!-- Summary cards -->
+                <div class="row g-3 mb-4" id="stats-summary"></div>
+
+                <!-- Charts -->
+                <div class="row g-3 mb-4" id="stats-charts-row" style="display:none">
+                    <div class="col-lg-6">
+                        <div class="card">
+                            <div class="card-header py-2"><span class="fw-bold small"><i
+                                        class="bi bi-graph-up me-1"></i>Cumulative P&L</span></div>
+                            <div class="card-body py-2"><canvas id="stats-pnl-chart" height="180"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card">
+                            <div class="card-header py-2"><span class="fw-bold small"><i
+                                        class="bi bi-pie-chart me-1"></i>Win Rate by Pair</span></div>
+                            <div class="card-body py-2"><canvas id="stats-wr-chart" height="180"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Breakdown tables -->
+                <div class="row g-4">
+                    <div class="col-lg-6">
+                        <div class="card" id="stats-by-pair"></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card" id="stats-by-timeframe"></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card" id="stats-by-direction"></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card" id="stats-by-reason"></div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script type="module" src="js/app.js"></script>
+    <script type="module">
+        import { initApp } from './js/app.js';
+        document.addEventListener('DOMContentLoaded', initApp);
+    </script>
 </body>
+
+</html>
 
 </html>

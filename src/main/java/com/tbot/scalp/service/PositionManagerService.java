@@ -8,11 +8,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.stereotype.Service;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import com.tbot.scalp.config.ScalpConfig;
 import com.tbot.scalp.model.Candle;
 import com.tbot.scalp.model.OpenPosition;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
@@ -78,15 +79,43 @@ public class PositionManagerService {
                 }
             }
 
-            // Level 1: Break-even
-            if (!pos.isBreakEvenApplied()) {
+            // Level 1: Progressive break-even (3 levels)
+            {
                 double bePercent = tfSettings.getBreakEvenTriggerPercent() != null
                         ? tfSettings.getBreakEvenTriggerPercent()
                         : 50.0;
-                if (pos.getTpProgressPercent() >= bePercent) {
-                    pos.setStopLoss(pos.getEntryPrice());
-                    pos.setBreakEvenApplied(true);
-                    log.info("[BREAK-EVEN] {} SL moved to entry {}", pos.getPair(), pos.getEntryPrice());
+                double progress = pos.getTpProgressPercent();
+                double tpDist = Math.abs(pos.getTakeProfit() - pos.getEntryPrice());
+                boolean isLong = "LONG".equals(pos.getDirection());
+                double newSl = pos.getStopLoss();
+
+                if (progress >= bePercent + 25 && pos.getBeLevel() < 3) {
+                    // Level 3: lock 50% of TP distance
+                    newSl = isLong ? pos.getEntryPrice() + 0.5 * tpDist : pos.getEntryPrice() - 0.5 * tpDist;
+                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
+                        pos.setStopLoss(newSl);
+                        pos.setBeLevel(3);
+                        pos.setBreakEvenApplied(true);
+                        log.info("[BE-L3] {} SL locked at 50% TP: {}", pos.getPair(), newSl);
+                    }
+                } else if (progress >= bePercent + 15 && pos.getBeLevel() < 2) {
+                    // Level 2: lock 25% of TP distance
+                    newSl = isLong ? pos.getEntryPrice() + 0.25 * tpDist : pos.getEntryPrice() - 0.25 * tpDist;
+                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
+                        pos.setStopLoss(newSl);
+                        pos.setBeLevel(2);
+                        pos.setBreakEvenApplied(true);
+                        log.info("[BE-L2] {} SL locked at 25% TP: {}", pos.getPair(), newSl);
+                    }
+                } else if (progress >= bePercent && pos.getBeLevel() < 1) {
+                    // Level 1: break-even (SL to entry)
+                    newSl = pos.getEntryPrice();
+                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
+                        pos.setStopLoss(newSl);
+                        pos.setBeLevel(1);
+                        pos.setBreakEvenApplied(true);
+                        log.info("[BE-L1] {} SL moved to entry {}", pos.getPair(), newSl);
+                    }
                 }
             }
 
@@ -190,7 +219,8 @@ public class PositionManagerService {
     }
 
     /**
-     * Records a contrary signal for a coin. Returns true if the threshold is reached
+     * Records a contrary signal for a coin. Returns true if the threshold is
+     * reached
      * and the existing position was auto-closed (CONTRARY_SIGNALS).
      * Only counts signals whose direction is opposite to the open position.
      */
@@ -199,8 +229,10 @@ public class PositionManagerService {
                 .filter(p -> p.getPair().equals(pair))
                 .findFirst().orElse(null);
 
-        if (existing == null) return false;
-        if (existing.getDirection().equals(signalDirection)) return false;
+        if (existing == null)
+            return false;
+        if (existing.getDirection().equals(signalDirection))
+            return false;
 
         // Reset counter if contrary direction changed
         String lastDir = lastContraryDirection.get(pair);

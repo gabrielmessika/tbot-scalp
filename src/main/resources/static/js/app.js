@@ -1,285 +1,190 @@
-// ===== T-Bot Scalp — app.js =====
-// Main entry point, polling, tab init
+// T-Bot Scalp — app.js
+// Main entry point: init, polling, routing
 
-const state = {
-    selectedSession: 0,
-    selectedPortfolio: 0,
-    backtestData: null
-};
+import { fetchJson, el } from './utils.js';
+import { initLogs, refreshLogs } from './analysis.js';
+import { renderBacktest, exportBacktestCSV } from './backtest.js';
+import { refreshTrades, refreshHistory, renderHistoryTable } from './trading.js';
+import { refreshStats } from './stats.js';
+import { startCountdown } from './countdown.js';
 
-// ===== Polling =====
+const POLL_INTERVAL = 15000; // 15s
+const TRADE_POLL_INTERVAL = 10000; // 10s
+
+let activeTab = 'tab-backtest';
+
+// ==================== INIT ====================
+
+export function initApp() {
+    initLogs();
+    initTabListeners();
+    pollState();
+    pollResults();
+
+    setInterval(pollState, POLL_INTERVAL);
+    setInterval(() => {
+        if (activeTab === 'tab-trades') refreshTrades();
+        else if (activeTab === 'tab-history') refreshHistory();
+        else if (activeTab === 'tab-logs') refreshLogs();
+    }, TRADE_POLL_INTERVAL);
+
+    // Start countdown for analysis cycle
+    startCountdown(POLL_INTERVAL / 1000);
+}
+
+function initTabListeners() {
+    document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
+        tab.addEventListener('shown.bs.tab', (e) => {
+            activeTab = e.target.getAttribute('data-bs-target')?.replace('#', '') || '';
+            onTabShown(activeTab);
+        });
+    });
+}
+
+function onTabShown(tab) {
+    if (tab === 'tab-logs') refreshLogs();
+    else if (tab === 'tab-trades') refreshTrades();
+    else if (tab === 'tab-history') refreshHistory();
+    else if (tab === 'tab-status') refreshStatus();
+    else if (tab === 'tab-stats') refreshStats();
+}
+
+// ==================== POLLING ====================
+
 async function pollState() {
     try {
-        const res = await fetch('/api/state');
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await fetchJson('/api/state');
+        if (!data) return;
         updateStartupBanner(data);
         updateWsStatus(data.wsConnected);
-        updateModeBadge(data);
+        updateLastUpdate();
     } catch (e) { /* ignore */ }
 }
 
 async function pollResults() {
     try {
-        const res = await fetch('/api/results');
-        if (res.status === 204) return;
-        const data = await res.json();
-        if (data.logs) renderLogs(data.logs);
-        if (data.backtest) {
-            state.backtestData = data.backtest;
-            renderBacktest(data.backtest);
-        }
+        const data = await fetchJson('/api/results');
+        if (!data) return;
+        if (data.backtest) renderBacktest(data.backtest);
     } catch (e) { /* ignore */ }
 }
 
+// ==================== STARTUP BANNER ====================
+
 function updateStartupBanner(data) {
-    const banner = document.getElementById('startup-banner');
-    const phase = document.getElementById('startup-phase');
+    const banner = el('startup-banner');
+    if (!banner) return;
     if (!data.startupComplete) {
-        banner.classList.remove('d-none');
-        phase.textContent = data.startupPhase || 'Initializing...';
+        banner.style.display = 'block';
+        el('startup-phase').textContent = data.startupPhase || 'Initializing...';
     } else {
-        banner.classList.add('d-none');
+        banner.style.display = 'none';
     }
 }
 
 function updateWsStatus(connected) {
-    const el = document.getElementById('ws-status');
-    el.textContent = connected ? 'WS: Connected' : 'WS: Offline';
-    el.className = `badge ${connected ? 'bg-success' : 'bg-secondary'}`;
+    const wsEl = el('ws-status');
+    if (!wsEl) return;
+    wsEl.textContent = connected ? 'WS: ON' : 'WS: OFF';
+    wsEl.className = `badge ${connected ? 'bg-success' : 'bg-danger'}`;
 }
 
-function updateModeBadge(data) {
-    const el = document.getElementById('mode-badge');
-    if (data.liveTrading) { el.textContent = 'LIVE'; el.className = 'badge bg-danger'; }
-    else if (data.autoTrade) { el.textContent = 'DRY-RUN'; el.className = 'badge bg-warning text-dark'; }
-    else { el.textContent = 'MANUAL'; el.className = 'badge bg-info'; }
+function updateLastUpdate() {
+    const lu = el('last-update');
+    if (lu) lu.textContent = 'Updated: ' + new Date().toLocaleTimeString();
 }
 
-// ===== Actions =====
+// ==================== ACTIONS ====================
+
 window.runAnalysis = async function () {
+    const btn = el('btn-analyze');
+    const overlay = el('loading-overlay');
+    btn.disabled = true;
+    if (overlay) { overlay.classList.add('show'); el('loading-text').textContent = 'Analysis in progress...'; }
+
     try {
-        const res = await fetch('/api/analyze', { method: 'POST' });
-        const data = await res.json();
-        if (data.logs) renderLogs(data.logs);
-        if (data.alerts && data.alerts.length > 0) {
-            const badge = document.getElementById('trades-badge');
-            badge.textContent = data.alerts.length;
-            badge.classList.remove('d-none');
-        }
-    } catch (e) { console.error('Analysis failed:', e); }
+        const data = await fetchJson('/api/analyze');
+        if (data?.backtest) renderBacktest(data.backtest);
+        startCountdown(POLL_INTERVAL / 1000);
+    } catch (e) {
+        console.error('Analysis failed:', e);
+    } finally {
+        btn.disabled = false;
+        if (overlay) overlay.classList.remove('show');
+    }
 };
 
 window.runBacktest = async function () {
-    const btn = document.getElementById('btn-backtest');
-    const loading = document.getElementById('backtest-loading');
-    const empty = document.getElementById('backtest-empty');
-    const content = document.getElementById('backtest-content');
-
+    const btn = el('btn-backtest');
+    const overlay = el('loading-overlay');
     btn.disabled = true;
-    loading.classList.remove('d-none');
-    empty.classList.add('d-none');
-    content.classList.add('d-none');
+    if (overlay) { overlay.classList.add('show'); el('loading-text').textContent = 'Backtest running... This may take a few minutes.'; }
 
     try {
         const res = await fetch('/api/backtest', { method: 'POST' });
         if (res.status === 409) { alert('Backtest already running'); return; }
         const data = await res.json();
-        if (data.logs) renderLogs(data.logs);
-        if (data.backtest) {
-            state.backtestData = data.backtest;
-            renderBacktest(data.backtest);
-        }
-    } catch (e) { console.error('Backtest failed:', e); }
-    finally {
+        if (data?.backtest) renderBacktest(data.backtest);
+    } catch (e) {
+        console.error('Backtest failed:', e);
+    } finally {
         btn.disabled = false;
-        loading.classList.add('d-none');
+        if (overlay) overlay.classList.remove('show');
     }
 };
 
-window.refreshLogs = function () { pollResults(); };
+// ==================== STATUS TAB ====================
 
-// ===== Logs =====
-function renderLogs(logs) {
-    const el = document.getElementById('log-output');
-    const filter = document.getElementById('log-filter').value.toLowerCase();
-    const lines = logs
-        .filter(l => !filter || l.message.toLowerCase().includes(filter))
-        .map(l => {
-            const time = new Date(l.timestamp).toLocaleTimeString();
-            const cls = `log-${l.level}`;
-            return `<span class="${cls}">[${time}] [${l.level}] ${escapeHtml(l.message)}</span>`;
-        });
-    el.innerHTML = lines.join('\n');
-    el.scrollTop = el.scrollHeight;
-}
-
-// ===== Backtest =====
-function renderBacktest(bt) {
-    if (!bt || !bt.sessions || bt.sessions.length === 0) return;
-
-    const empty = document.getElementById('backtest-empty');
-    const content = document.getElementById('backtest-content');
-    empty.classList.add('d-none');
-    content.classList.remove('d-none');
-
-    renderSessionSelector(bt.sessions);
-    renderPortfolioContent();
-}
-
-function renderSessionSelector(sessions) {
-    const el = document.getElementById('session-selector');
-    el.innerHTML = '<div class="btn-group flex-wrap">' +
-        sessions.map((s, i) => `<button class="btn btn-sm session-btn ${i === state.selectedSession ? 'btn-warning active' : 'btn-outline-secondary'}"
-            onclick="selectSession(${i})" title="${s.sessionDescription || ''}">${s.sessionName} (${s.totalSignals})</button>`).join('') +
-        '</div>';
-}
-
-window.selectSession = function (idx) {
-    state.selectedSession = idx;
-    state.selectedPortfolio = 0;
-    renderPortfolioContent();
-    document.querySelectorAll('.session-btn').forEach((b, i) => {
-        b.className = `btn btn-sm session-btn ${i === idx ? 'btn-warning active' : 'btn-outline-secondary'}`;
-    });
-};
-
-function renderPortfolioContent() {
-    const bt = state.backtestData;
-    if (!bt) return;
-    const session = bt.sessions[state.selectedSession];
-    if (!session) return;
-
-    // Portfolio selector
-    const pSel = document.getElementById('portfolio-selector');
-    pSel.innerHTML = '<div class="btn-group">' +
-        session.portfolios.map((p, i) => `<button class="btn btn-sm ${i === state.selectedPortfolio ? 'btn-primary' : 'btn-outline-secondary'}"
-            onclick="selectPortfolio(${i})">$${p.initialBalance}</button>`).join('') +
-        '</div>';
-
-    // Comparison table
-    renderComparisonTable(session);
-
-    // Selected portfolio stats
-    const pf = session.portfolios[state.selectedPortfolio];
-    if (pf) {
-        renderPortfolioStats(pf);
-        renderPortfolioTrades(pf);
-    }
-}
-
-window.selectPortfolio = function (idx) {
-    state.selectedPortfolio = idx;
-    renderPortfolioContent();
-};
-
-function renderComparisonTable(session) {
-    const el = document.getElementById('comparison-table');
-    const rows = session.portfolios.map(p => `<tr>
-        <td>$${p.initialBalance}</td>
-        <td>$${p.finalBalance.toFixed(2)}</td>
-        <td class="${pnlClass(p.roi)}">${p.roi > 0 ? '+' : ''}${p.roi.toFixed(1)}%</td>
-        <td>${p.winRate.toFixed(1)}%</td>
-        <td>${p.totalTrades}</td>
-        <td class="pnl-positive">${p.wins}</td>
-        <td class="pnl-negative">${p.losses}</td>
-        <td>${p.skipped}</td>
-        <td class="pnl-negative">${p.maxDrawdown.toFixed(1)}%</td>
-        <td class="pnl-positive">$${p.bestTrade.toFixed(2)}</td>
-        <td class="pnl-negative">$${p.worstTrade.toFixed(2)}</td>
-    </tr>`);
-
-    el.innerHTML = `<div class="table-responsive mb-3"><table class="table table-sm table-dark table-hover">
-        <thead><tr><th>Initial</th><th>Final</th><th>ROI</th><th>Win Rate</th><th>Trades</th>
-        <th>Wins</th><th>Losses</th><th>Skipped</th><th>Max DD</th><th>Best</th><th>Worst</th></tr></thead>
-        <tbody>${rows.join('')}</tbody></table></div>`;
-}
-
-function renderPortfolioStats(pf) {
-    const el = document.getElementById('portfolio-stats');
-    const cards = [
-        { label: 'Initial', value: `$${pf.initialBalance}`, cls: '' },
-        { label: 'Final', value: `$${pf.finalBalance.toFixed(2)}`, cls: pnlClass(pf.roi) },
-        { label: 'ROI', value: `${pf.roi > 0 ? '+' : ''}${pf.roi.toFixed(1)}%`, cls: pnlClass(pf.roi) },
-        { label: 'Win Rate', value: `${pf.winRate.toFixed(1)}%`, cls: pf.winRate >= 40 ? 'pnl-positive' : 'pnl-negative' },
-        { label: 'Total Trades', value: pf.totalTrades, cls: '' },
-        { label: 'Max Drawdown', value: `${pf.maxDrawdown.toFixed(1)}%`, cls: 'pnl-negative' },
-    ];
-    el.innerHTML = cards.map(c => `<div class="col-md-2 col-4"><div class="stat-card">
-        <div class="stat-value ${c.cls}">${c.value}</div>
-        <div class="stat-label">${c.label}</div></div></div>`).join('');
-}
-
-function renderPortfolioTrades(pf) {
-    const el = document.getElementById('trades-table');
-    if (!pf.trades || pf.trades.length === 0) {
-        el.innerHTML = '<p class="text-muted">No trades</p>';
-        return;
-    }
-    const rows = pf.trades.map(t => {
-        const pnlCls = t.pnl > 0 ? 'pnl-positive' : t.pnl < 0 ? 'pnl-negative' : 'pnl-neutral';
-        const date = t.entryTime ? new Date(t.entryTime).toLocaleString() : '-';
-        return `<tr>
-            <td>${t.pair}</td><td>${t.timeframe}</td>
-            <td class="${t.direction === 'LONG' ? 'pnl-positive' : 'pnl-negative'}">${t.direction}</td>
-            <td>${formatPrice(t.entryPrice)}</td>
-            <td>${formatPrice(t.exitPrice)}</td>
-            <td>${t.leverage}x</td>
-            <td>${t.score ? t.score.toFixed(1) : '-'}</td>
-            <td>${t.result}</td>
-            <td class="${pnlCls}">${t.pnl ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '-'}</td>
-            <td class="${pnlCls}">${t.pnlPercent ? (t.pnlPercent > 0 ? '+' : '') + t.pnlPercent.toFixed(1) + '%' : '-'}</td>
-            <td>${t.candlesElapsed || '-'}</td>
-            <td>${t.balanceAfter ? '$' + t.balanceAfter.toFixed(2) : '-'}</td>
-            <td>${date}</td>
-        </tr>`;
-    });
-
-    el.innerHTML = `<h6 class="mt-3">Trades Detail</h6>
-    <div class="table-responsive"><table class="table table-sm table-dark table-hover">
-        <thead><tr><th>Pair</th><th>TF</th><th>Dir</th><th>Entry</th><th>Exit</th>
-        <th>Lev</th><th>Score</th><th>Result</th><th>P&L $</th><th>P&L %</th>
-        <th>Candles</th><th>Balance</th><th>Date</th></tr></thead>
-        <tbody>${rows.join('')}</tbody></table></div>`;
-}
-
-// ===== Config Tab =====
-async function loadConfig() {
+async function refreshStatus() {
     try {
-        const res = await fetch('/api/config');
-        const data = await res.json();
-        const el = document.getElementById('config-content');
-        el.innerHTML = `<pre class="log-terminal">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-    } catch (e) { /* ignore */ }
+        const [state, config, balance] = await Promise.all([
+            fetchJson('/api/bot/state'),
+            fetchJson('/api/config'),
+            fetchJson('/api/bot/exchange/balance')
+        ]);
+
+        // Overview cards
+        const overview = el('status-overview');
+        if (state) {
+            const risk = state.risk || {};
+            overview.innerHTML = `
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Mode</div><div class="stat-value">${state.liveTrading ? '<span class="badge badge-live">LIVE</span>' : state.autoTrade ? '<span class="badge badge-simulated">DRY-RUN</span>' : '<span class="badge badge-off">OFF</span>'}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Exchange</div><div class="stat-value">${state.exchange || '—'}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">WebSocket</div><div class="stat-value">${state.wsConnected ? '<span class="badge bg-success">Connected</span>' : '<span class="badge bg-danger">Disconnected</span>'}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Balance</div><div class="stat-value">${balance?.balance != null ? '$' + Number(balance.balance).toFixed(2) : '—'}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Open Positions</div><div class="stat-value">${state.openCount || 0}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Drawdown</div><div class="stat-value ${(risk.currentDrawdown || 0) > 5 ? 'pnl-negative' : ''}">${(risk.currentDrawdown || 0).toFixed(2)}%</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Daily P&L</div><div class="stat-value ${(risk.dailyPnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${(risk.dailyPnl || 0) >= 0 ? '+' : ''}$${(risk.dailyPnl || 0).toFixed(2)}</div></div></div>
+                <div class="col-md-3 col-6"><div class="stat-card"><div class="stat-label">Startup</div><div class="stat-value">${state.startupComplete ? '<span class="badge bg-success">Complete</span>' : '<span class="badge bg-warning">' + (state.startupPhase || 'Init') + '</span>'}</div></div></div>
+            `;
+        }
+
+        // Config display
+        const cfgEl = el('config-container');
+        if (config) {
+            const sections = [
+                { title: 'Market Data', data: { Exchange: config.exchange, Coins: Array.isArray(config.coins) ? config.coins.length + ' coins' : config.coins, Timeframes: config.timeframes } },
+                { title: 'Position Sizing', data: { 'Position Size': config.positionSizePercent + '%', 'Max Leverage': config.maxLeverage + 'x', 'Max SL': config.maxSlPercent + '%' } },
+                { title: 'Risk Management', data: { 'Threshold': config.confidentThreshold, 'Max Positions': config.maxOpenPositions, 'Max Daily Loss': config.maxDailyLossPercent + '%', 'Max Drawdown': config.maxDrawdownPercent + '%', 'Max Loss/Trade': config.maxLossPerTradePercent + '%', 'Max Margin': config.maxMarginUsagePercent + '%' } },
+                { title: 'Backtest', data: { Sessions: config.backtestSessions, Portfolios: config.portfolioBalances?.join(', ') } },
+                { title: 'Strategies', data: config.strategies || {} }
+            ];
+
+            cfgEl.innerHTML = '<div class="row g-3">' + sections.map(s => `
+                <div class="col-lg-4 col-md-6">
+                    <div class="card">
+                        <div class="card-header fw-bold small">${s.title}</div>
+                        <div class="card-body p-2">
+                            <table class="table table-sm mb-0">${Object.entries(s.data).map(([k, v]) =>
+                `<tr><td class="text-secondary">${k}</td><td class="fw-bold">${v}</td></tr>`
+            ).join('')}</table>
+                        </div>
+                    </div>
+                </div>`).join('') + '</div>';
+        }
+    } catch (e) { console.error('Status error:', e); }
 }
 
-// ===== Helpers =====
-function formatPrice(p) {
-    if (!p) return '-';
-    if (p >= 1000) return p.toFixed(2);
-    if (p >= 1) return p.toFixed(4);
-    return p.toFixed(6);
-}
-
-function pnlClass(v) {
-    return v > 0 ? 'pnl-positive' : v < 0 ? 'pnl-negative' : 'pnl-neutral';
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// ===== Init =====
-document.addEventListener('DOMContentLoaded', () => {
-    pollState();
-    pollResults();
-    loadConfig();
-
-    setInterval(pollState, 5000);
-    setInterval(pollResults, 30000);
-
-    // Log filter
-    document.getElementById('log-filter').addEventListener('input', () => pollResults());
-});
+window.refreshStatus = refreshStatus;
+window.refreshLogs = refreshLogs;
+window.renderHistoryTable = renderHistoryTable;
