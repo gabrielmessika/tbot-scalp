@@ -184,19 +184,56 @@ public class OrderManagerService {
 
     /**
      * Get effective equity: real from exchange in live mode, simulated otherwise.
+     * In dry-run, includes unrealized P&L from open positions (t-bot parity).
      */
     public double getEffectiveEquity() {
         if (config.isLiveTrading()) {
             double e = executionService.getEquity();
             return e > 0 ? e : getEffectiveBalance();
         }
-        return getEffectiveBalance();
+        double unrealized = positionManager.getOpenPositions().stream()
+                .mapToDouble(p -> p.getPositionSizeUsd() * p.getCurrentPnlPercent() / 100.0)
+                .sum();
+        return getEffectiveBalance() + unrealized;
     }
 
     /**
-     * Get risk status for display.
+     * Get unrealized P&L across all open positions.
+     */
+    public double getUnrealizedPnl() {
+        return positionManager.getOpenPositions().stream()
+                .mapToDouble(p -> p.getPositionSizeUsd() * p.getCurrentPnlPercent() / 100.0)
+                .sum();
+    }
+
+    /**
+     * Get total margin used across all open positions.
+     */
+    public double getTotalMarginUsed() {
+        return positionManager.getOpenPositions().stream()
+                .mapToDouble(p -> p.getQuantity() * p.getEntryPrice() / p.getLeverage())
+                .sum();
+    }
+
+    /**
+     * Get enriched risk status with all fields for UI display.
      */
     public RiskManagementService.RiskStatus getRiskStatus() {
-        return riskService.checkPortfolioRisk(getEffectiveBalance(), getEffectiveEquity());
+        double balance = getEffectiveBalance();
+        double equity = getEffectiveEquity();
+        RiskManagementService.RiskStatus status = riskService.checkPortfolioRisk(balance, equity);
+
+        // Enrich with margin/position/breakdown data
+        double usedMargin = getTotalMarginUsed();
+        status.setUsedMargin(usedMargin);
+        status.setUsedMarginPercent(equity > 0 ? (usedMargin / equity) * 100 : 0);
+        status.setOpenPositions(positionManager.getOpenPositions().size());
+        status.setMaxPositions(config.getMaxOpenPositions());
+        status.setBaseBalance(config.getDryRunBalance());
+        status.setRealizedPnl(positionManager.getRealizedPnl());
+        status.setUnrealizedPnl(getUnrealizedPnl());
+        status.setOpenPairs(positionManager.getOpenPairKeys());
+
+        return status;
     }
 }

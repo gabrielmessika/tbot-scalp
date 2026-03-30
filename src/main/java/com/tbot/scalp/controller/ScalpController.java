@@ -85,9 +85,7 @@ public class ScalpController {
         state.put("cooldowns", positionManager.getActiveCooldowns());
         state.put("wsConnected", wsService.isConnected());
 
-        double balance = orderManager.getEffectiveBalance();
-        double equity = orderManager.getEffectiveEquity();
-        RiskManagementService.RiskStatus risk = riskService.checkPortfolioRisk(balance, equity);
+        RiskManagementService.RiskStatus risk = orderManager.getRiskStatus();
         state.put("risk", risk);
 
         state.put("autoTrade", config.isAutoTrade());
@@ -97,6 +95,16 @@ public class ScalpController {
         state.put("startupPhase", startupRunner.getStartupPhase());
         state.put("backtestRunning", analysisService.isBacktestRunning());
         state.put("pendingOrders", positionManager.pendingOrderCount());
+
+        Map<String, Object> tfConfigs = new LinkedHashMap<>();
+        for (String tf : config.getTimeframes()) {
+            var tfs = config.getEffectiveSettings(tf);
+            Map<String, Object> tfMap = new LinkedHashMap<>();
+            tfMap.put("timeoutCandles", tfs.getTimeoutCandles());
+            tfConfigs.put(tf, tfMap);
+        }
+        state.put("timeframeSettings", tfConfigs);
+
         return ResponseEntity.ok(state);
     }
 
@@ -110,14 +118,11 @@ public class ScalpController {
         state.put("pendingOrders", positionManager.pendingOrderCount());
         state.put("cooldowns", positionManager.getActiveCooldowns());
 
+        RiskManagementService.RiskStatus riskStatus = orderManager.getRiskStatus();
         Map<String, Object> risk = new LinkedHashMap<>();
         risk.put("peakEquity", riskService.getPeakEquity());
         risk.put("dailyStartBalance", riskService.getDailyStartBalance());
         risk.put("dailyResetTimestamp", riskService.getDailyResetTimestamp());
-
-        double balance = orderManager.getEffectiveBalance();
-        double equity = orderManager.getEffectiveEquity();
-        RiskManagementService.RiskStatus riskStatus = riskService.checkPortfolioRisk(balance, equity);
         risk.put("availableBalance", riskStatus.getAvailableBalance());
         risk.put("totalEquity", riskStatus.getTotalEquity());
         risk.put("dailyPnl", riskStatus.getDailyPnl());
@@ -125,6 +130,10 @@ public class ScalpController {
         risk.put("dailyLimitReached", riskStatus.isDailyLimitReached());
         risk.put("currentDrawdown", riskStatus.getCurrentDrawdown());
         risk.put("drawdownCircuitBreaker", riskStatus.isDrawdownCircuitBreaker());
+        risk.put("usedMargin", riskStatus.getUsedMargin());
+        risk.put("usedMarginPercent", riskStatus.getUsedMarginPercent());
+        risk.put("openPositions", riskStatus.getOpenPositions());
+        risk.put("maxPositions", riskStatus.getMaxPositions());
         state.put("risk", risk);
 
         state.put("autoTrade", config.isAutoTrade());

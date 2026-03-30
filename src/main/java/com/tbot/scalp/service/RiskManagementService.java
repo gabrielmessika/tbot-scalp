@@ -151,5 +151,14 @@ public class RiskManagementService {
         private double currentDrawdown;
         private double maxDrawdownPercent;
         private boolean drawdownCircuitBreaker;
+        // Enriched fields (t-bot parity)
+        private double usedMargin;
+        private double usedMarginPercent;
+        private int openPositions;
+        private int maxPositions;
+        private double baseBalance;
+        private double realizedPnl;
+        private double unrealizedPnl;
+        private List<String> openPairs;
     }
 }

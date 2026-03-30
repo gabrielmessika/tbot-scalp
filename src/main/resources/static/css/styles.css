@@ -192,7 +192,7 @@ body {
 }
 
 .stat-value {
-    font-size: 2rem;
+    font-size: 1.5rem;
     font-weight: 700;
 }
 
@@ -200,6 +200,13 @@ body {
     color: var(--text-secondary);
     font-size: 0.85rem;
     text-transform: uppercase;
+}
+
+.stat-detail {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin-top: 4px;
+    line-height: 1.3;
 }
 
 /* Signal cards */
