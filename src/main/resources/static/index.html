@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>T-Bot Scalp</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="css/styles.css" rel="stylesheet">
+</head>
+
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
+        <div class="container-fluid">
+            <span class="navbar-brand">
+                <i class="bi bi-lightning-charge-fill text-warning"></i> T-Bot Scalp
+            </span>
+            <div class="d-flex gap-2 align-items-center">
+                <span id="ws-status" class="badge bg-secondary">WS: --</span>
+                <span id="mode-badge" class="badge bg-info">--</span>
+                <button class="btn btn-sm btn-outline-primary" onclick="runAnalysis()">
+                    <i class="bi bi-search"></i> Analyze
+                </button>
+                <button class="btn btn-sm btn-outline-warning" onclick="runBacktest()" id="btn-backtest">
+                    <i class="bi bi-bar-chart-line"></i> Backtest
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Startup Banner -->
+    <div id="startup-banner" class="alert alert-info m-3 d-none">
+        <div class="d-flex align-items-center gap-2">
+            <div class="spinner-border spinner-border-sm" role="status"></div>
+            <span id="startup-phase">Initializing...</span>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <ul class="nav nav-tabs px-3 pt-2" id="mainTabs" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button">
+                <i class="bi bi-terminal"></i> Logs
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link active" id="backtest-tab" data-bs-toggle="tab" data-bs-target="#backtest"
+                type="button">
+                <i class="bi bi-bar-chart-line"></i> Backtest
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="trades-tab" data-bs-toggle="tab" data-bs-target="#trades" type="button">
+                <i class="bi bi-arrow-left-right"></i> Trades
+                <span id="trades-badge" class="badge bg-primary d-none">0</span>
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#configPanel" type="button">
+                <i class="bi bi-gear"></i> Config
+            </button>
+        </li>
+    </ul>
+
+    <!-- Tab Content -->
+    <div class="tab-content p-3" id="mainTabContent">
+        <!-- Logs Tab -->
+        <div class="tab-pane fade" id="logs" role="tabpanel">
+            <div class="d-flex justify-content-between mb-2">
+                <input type="text" id="log-filter" class="form-control form-control-sm w-25"
+                    placeholder="Filter logs...">
+                <button class="btn btn-sm btn-outline-secondary" onclick="refreshLogs()">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div id="log-output" class="log-terminal"></div>
+        </div>
+
+        <!-- Backtest Tab -->
+        <div class="tab-pane fade show active" id="backtest" role="tabpanel">
+            <div id="backtest-empty" class="text-center text-muted py-5">
+                <i class="bi bi-bar-chart-line" style="font-size:3rem"></i>
+                <p class="mt-2">Click <strong>Backtest</strong> to run a walk-forward simulation</p>
+            </div>
+            <div id="backtest-loading" class="text-center py-5 d-none">
+                <div class="spinner-border text-warning" role="status"></div>
+                <p class="mt-2">Running backtest...</p>
+            </div>
+            <div id="backtest-content" class="d-none">
+                <div id="session-selector" class="mb-3"></div>
+                <div id="portfolio-selector" class="mb-3"></div>
+                <div id="comparison-table"></div>
+                <div id="portfolio-stats" class="row g-3 mb-3"></div>
+                <div id="trades-table"></div>
+            </div>
+        </div>
+
+        <!-- Trades Tab -->
+        <div class="tab-pane fade" id="trades" role="tabpanel">
+            <div id="risk-cards" class="row g-3 mb-3"></div>
+            <h6>Open Positions</h6>
+            <div id="open-positions" class="table-responsive mb-4">
+                <p class="text-muted">No open positions</p>
+            </div>
+        </div>
+
+        <!-- Config Tab -->
+        <div class="tab-pane fade" id="configPanel" role="tabpanel">
+            <div id="config-content" class="text-muted">Loading config...</div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="js/app.js"></script>
+</body>
+
+</html>

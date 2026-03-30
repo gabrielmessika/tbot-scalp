@@ -1,0 +1,120 @@
+body {
+    background-color: #0d1117;
+    color: #c9d1d9;
+}
+
+.navbar {
+    background-color: #161b22 !important;
+}
+
+.log-terminal {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    max-height: 60vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
+.stat-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 12px 16px;
+}
+
+.stat-card .stat-value {
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+.stat-card .stat-label {
+    font-size: 0.75rem;
+    color: #8b949e;
+    text-transform: uppercase;
+}
+
+.pnl-positive {
+    color: #3fb950;
+}
+
+.pnl-negative {
+    color: #f85149;
+}
+
+.pnl-neutral {
+    color: #8b949e;
+}
+
+.table {
+    font-size: 0.85rem;
+}
+
+.table th {
+    font-weight: 600;
+    color: #8b949e;
+    border-color: #30363d;
+}
+
+.table td {
+    border-color: #21262d;
+    vertical-align: middle;
+}
+
+.btn-group .btn {
+    font-size: 0.8rem;
+}
+
+.badge {
+    font-size: 0.7rem;
+}
+
+.nav-tabs .nav-link {
+    color: #8b949e;
+    border: none;
+    padding: 8px 16px;
+}
+
+.nav-tabs .nav-link.active {
+    color: #f0f6fc;
+    background: transparent;
+    border-bottom: 2px solid #f78166;
+}
+
+.nav-tabs .nav-link:hover {
+    color: #f0f6fc;
+}
+
+.session-btn {
+    font-size: 0.8rem;
+}
+
+.session-btn.active {
+    background-color: #f78166 !important;
+    border-color: #f78166 !important;
+}
+
+.log-INFO {
+    color: #8b949e;
+}
+
+.log-WARN {
+    color: #d29922;
+}
+
+.log-ERROR {
+    color: #f85149;
+}
+
+.log-SIGNAL {
+    color: #3fb950;
+    font-weight: 600;
+}
+
+#startup-banner {
+    font-size: 0.9rem;
+}
