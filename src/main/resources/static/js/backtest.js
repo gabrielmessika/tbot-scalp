@@ -131,6 +131,7 @@ function renderPortfolioTrades(pf) {
             <td>x${t.leverage}</td>
             <td><span class="badge ${resCls}" title="${t.skipReason || ''}">${(t.result || '').replace(/[✅❌⏰📈🔁↩🚫⏳]/g, '').trim()}</span></td>
             <td class="${pCls}">${t.pnl != null ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) + '$' : '—'}</td>
+            <td class="${t.feeUsd != null && t.feeUsd < 0 ? 'pnl-positive' : 'pnl-negative'}">${t.feeUsd != null ? (t.feeUsd <= 0 ? '' : '-') + Math.abs(t.feeUsd).toFixed(2) + '$' : '—'}</td>
             <td>${bal}</td>
             <td class="small">${entryDate}</td>
             <td class="small">${exitDate}</td>

@@ -16,16 +16,20 @@ import java.util.Map;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tbot.scalp.config.ScalpConfig;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import com.tbot.scalp.model.OpenPosition;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class TradeHistoryService {
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private final ObjectMapper mapper = new ObjectMapper();
+    private final ScalpConfig config;
     private File currentFile;
 
     public void recordClose(OpenPosition pos, double exitPrice, String closeReason, int candlesElapsed) {
@@ -59,8 +63,14 @@ public class TradeHistoryService {
             entry.put("quantity", pos.getQuantity());
             entry.put("score", pos.getScore());
             entry.put("closeReason", closeReason);
+            double feePercent = config.isUseMakerOrders()
+                    ? config.getMakerFeePercent() / 100.0
+                    : config.getTakerFeePercent() / 100.0;
+            double notional = pos.getQuantity() * pos.getEntryPrice();
+            double feeUsd = feePercent * 2 * pos.getLeverage() * notional / pos.getLeverage();
             entry.put("pnlPercent", Math.round(pnlPercent * 100.0) / 100.0);
             entry.put("pnlUsd", Math.round(pnlUsd * 100.0) / 100.0);
+            entry.put("feeUsd", Math.round(feeUsd * 100.0) / 100.0);
             entry.put("candlesElapsed", candlesElapsed);
             entry.put("breakEvenApplied", pos.isBreakEvenApplied());
             entry.put("dryRun", pos.isDryRun());

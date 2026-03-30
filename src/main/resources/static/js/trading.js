@@ -223,6 +223,7 @@ export function renderHistoryTable(trades) {
             <td>x${t.leverage || '—'}</td>
             <td class="${pnlClass(t.pnlPercent)}">${formatPercent(t.pnlPercent)}</td>
             <td class="${pnlClass(t.pnlUsd)}">${formatUsd(t.pnlUsd)}</td>
+            <td class="${t.feeUsd != null && t.feeUsd < 0 ? 'pnl-positive' : 'pnl-negative'}">${t.feeUsd != null ? (t.feeUsd <= 0 ? '+' : '-') + Math.abs(t.feeUsd).toFixed(2) + '$' : '—'}</td>
             <td>${reasonBadge(t.closeReason)}</td>
             <td>${t.breakEvenApplied ? '<span class="badge badge-confident">BE</span>' : '—'}</td>
         `;

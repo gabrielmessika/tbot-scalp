@@ -31,6 +31,7 @@ public class TradeResult {
                            // "Skipped 🚫", "Pending ⏳"
     private double pnl;
     private double pnlPercent;
+    private double feeUsd;
     private int candlesElapsed;
     private boolean breakEvenApplied;
     private String skipReason;

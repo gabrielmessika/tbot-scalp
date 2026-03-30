@@ -79,11 +79,21 @@ public class BacktestService {
             return pendingResult(signal);
         }
 
-        // Entry with slippage
-        double slippage = config.getEntrySlippagePercent() / 100.0;
-        double entryPrice = "LONG".equals(signal.getDirection())
-                ? signal.getEntryPrice() * (1 + slippage)
-                : signal.getEntryPrice() * (1 - slippage);
+        // Entry price — market (taker) or limit (maker)
+        double entryPrice;
+        if (config.isUseMakerOrders()) {
+            // Limit order: filled at signal price (no slippage), but not always filled
+            int hash = Math.abs((signal.getPair() + signal.getTimeframe() + signal.getCandleIndex()).hashCode());
+            if ((hash % 100) >= (int) (config.getMakerFillRate() * 100)) {
+                return pendingResult(signal); // not filled — simulate missed order
+            }
+            entryPrice = signal.getEntryPrice();
+        } else {
+            double slippage = config.getEntrySlippagePercent() / 100.0;
+            entryPrice = "LONG".equals(signal.getDirection())
+                    ? signal.getEntryPrice() * (1 + slippage)
+                    : signal.getEntryPrice() * (1 - slippage);
+        }
 
         // Adjust TP/SL proportionally to slippage
         double ratio = entryPrice / signal.getEntryPrice();
@@ -301,8 +311,9 @@ public class BacktestService {
                 continue;
             }
 
-            // Position sizing
-            double posSize = balance * config.getPositionSizePercent() / 100.0;
+            // Position sizing — compounding uses current balance, flat uses initial balance
+            double sizeBase = config.isBacktestCompounding() ? balance : initialBalance;
+            double posSize = sizeBase * config.getPositionSizePercent() / 100.0;
             posSize = Math.max(posSize, config.getMinPositionSize());
             if (posSize > balance) {
                 skipped++;
@@ -325,9 +336,15 @@ public class BacktestService {
             // Execute trade
             openPositions.add(pairTf);
             double pnlUsd = 0;
+            double feeUsd = 0;
             if (!"Pending ⏳".equals(base.getResult()) && !"Skipped 🚫".equals(base.getResult())) {
                 double pnlPct = base.getPnlPercent();
                 pnlUsd = posSize * pnlPct / 100.0;
+                // feeUsd: round-trip fee in dollars (negative = rebate for maker)
+                double feePercent = config.isUseMakerOrders()
+                        ? config.getMakerFeePercent() / 100.0
+                        : config.getTakerFeePercent() / 100.0;
+                feeUsd = feePercent * 2 * base.getLeverage() * posSize;
                 balance += pnlUsd;
 
                 if (balance > peakBalance)
@@ -364,6 +381,7 @@ public class BacktestService {
                     .score(base.getScore())
                     .result(base.getResult()).pnl(pnlUsd)
                     .pnlPercent(base.getPnlPercent())
+                    .feeUsd(Math.round(feeUsd * 100.0) / 100.0)
                     .candlesElapsed(base.getCandlesElapsed())
                     .breakEvenApplied(base.isBreakEvenApplied())
                     .balanceAfter(balance)
@@ -389,11 +407,16 @@ public class BacktestService {
 
     private TradeResult buildResult(Signal signal, double entryPrice, double exitPrice,
             String result, int elapsed, boolean beApplied, long exitTime) {
-        // Apply exit slippage (always adverse)
-        double exitSlip = config.getExitSlippagePercent() / 100.0;
-        double adjustedExit = "LONG".equals(signal.getDirection())
-                ? exitPrice * (1 - exitSlip)
-                : exitPrice * (1 + exitSlip);
+        // Exit slippage — only for market (taker) orders; limit exits have no slippage
+        double adjustedExit;
+        if (config.isUseMakerOrders()) {
+            adjustedExit = exitPrice;
+        } else {
+            double exitSlip = config.getExitSlippagePercent() / 100.0;
+            adjustedExit = "LONG".equals(signal.getDirection())
+                    ? exitPrice * (1 - exitSlip)
+                    : exitPrice * (1 + exitSlip);
+        }
 
         double pnl;
         if ("LONG".equals(signal.getDirection())) {
@@ -402,14 +425,17 @@ public class BacktestService {
             pnl = (entryPrice - adjustedExit) / entryPrice * 100 * signal.getLeverage();
         }
 
-        // Deduct round-trip taker fees (entry + exit)
-        double feePercent = config.getTakerFeePercent() / 100.0;
-        double feeCost = feePercent * 2 * signal.getLeverage() * 100; // as % of capital
-        pnl -= feeCost;
+        // Round-trip fees: taker (cost) or maker (rebate, can be negative)
+        double feePercent = config.isUseMakerOrders()
+                ? config.getMakerFeePercent() / 100.0
+                : config.getTakerFeePercent() / 100.0;
+        double feeCostPct = feePercent * 2 * signal.getLeverage() * 100; // as % of capital
+        pnl -= feeCostPct;
 
         return TradeResult.builder()
                 .entryTime(signal.getTimestamp()).exitTime(exitTime)
                 .pair(signal.getPair()).timeframe(signal.getTimeframe())
+                .feeUsd(0) // set later in simulatePortfolio when posSize is known
                 .direction(signal.getDirection()).strategies(signal.getStrategies())
                 .entryPrice(entryPrice).exitPrice(exitPrice)
                 .stopLoss(signal.getStopLoss()).takeProfit(signal.getTakeProfit())
