@@ -141,7 +141,7 @@ public class AnalysisService {
         try {
             for (String coin : config.getCoins()) {
                 for (String tf : config.getTimeframes()) {
-                    List<Candle> candles = marketDataService.fetchCandles(coin, tf, 0, 2);
+                    List<Candle> candles = marketDataService.fetchRecentCandles(coin, tf, config.getLiveCandleCount());
                     if (candles.size() < 50)
                         continue;
 

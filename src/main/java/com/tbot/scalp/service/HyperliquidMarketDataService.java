@@ -234,4 +234,59 @@ public class HyperliquidMarketDataService {
             default -> 300_000L;
         };
     }
+
+    /**
+     * Fetch a fixed number of recent candles (more efficient than day-based for
+     * live analysis).
+     * Warmup of 50 candles is added automatically.
+     */
+    public List<Candle> fetchRecentCandles(String pair, String interval, int candleCount) {
+        long intervalMs = intervalToMs(interval);
+        long windowMs = (long) candleCount * intervalMs;
+        long warmupMs = 50L * intervalMs;
+        long now = System.currentTimeMillis();
+        long endMs = now;
+        long startMs = now - windowMs - warmupMs;
+
+        List<Candle> allCandles = new ArrayList<>();
+        try {
+            long chunkMs = 500L * intervalMs;
+            long cursor = startMs;
+            Set<Long> seen = new HashSet<>();
+
+            while (cursor < endMs) {
+                long chunkEnd = Math.min(cursor + chunkMs, endMs);
+                long estimatedCandles = Math.min(500L, (chunkEnd - cursor) / intervalMs);
+                int candleWeight = 20 + (int) Math.max(1, Math.ceil(estimatedCandles / 60.0));
+                acquireRate(candleWeight);
+                String body = String.format(
+                        "{\"type\":\"candleSnapshot\",\"req\":{\"coin\":\"%s\",\"interval\":\"%s\",\"startTime\":%d,\"endTime\":%d}}",
+                        toHyperliquidCoin(pair), interval, cursor, chunkEnd);
+
+                String response = postInfo(body);
+                JsonNode arr = objectMapper.readTree(response);
+                if (arr.isArray()) {
+                    for (JsonNode c : arr) {
+                        long t = c.get("t").asLong();
+                        if (seen.add(t)) {
+                            allCandles.add(Candle.builder()
+                                    .timestamp(t)
+                                    .open(c.get("o").asDouble())
+                                    .high(c.get("h").asDouble())
+                                    .low(c.get("l").asDouble())
+                                    .close(c.get("c").asDouble())
+                                    .volume(c.get("v").asDouble())
+                                    .numTrades(c.has("n") ? c.get("n").asInt() : 0)
+                                    .build());
+                        }
+                    }
+                }
+                cursor = chunkEnd;
+            }
+            allCandles.sort(Comparator.comparingLong(Candle::getTimestamp));
+        } catch (Exception e) {
+            log.error("Failed to fetch recent candles for {} {}: {}", pair, interval, e.getMessage());
+        }
+        return allCandles;
+    }
 }

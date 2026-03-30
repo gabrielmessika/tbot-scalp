@@ -34,9 +34,9 @@ public class ScalpConfig {
     private boolean backtestCompounding = true; // false = position size fixed on initial balance
 
     // ===== MAKER ORDERS (limit orders) =====
-    private boolean useMakerOrders = false;     // simulate limit order fills instead of market
-    private double makerFeePercent = -0.01;     // Hyperliquid maker rebate (negative = received)
-    private double makerFillRate = 0.70;        // % of signals actually filled as limit orders
+    private boolean useMakerOrders = false; // simulate limit order fills instead of market
+    private double makerFeePercent = -0.01; // Hyperliquid maker rebate (negative = received)
+    private double makerFillRate = 0.70; // % of signals actually filled as limit orders
 
     // ===== POSITION SIZING =====
     private double positionSizePercent = 15.0;
@@ -110,6 +110,7 @@ public class ScalpConfig {
     // ===== STARTUP =====
     private boolean startupBacktest = true;
     private boolean startupChecks = true;
+    private int liveCandleCount = 300;
     private int maxSignalAgeCandlesLive = 3;
 
     @Data
