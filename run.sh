@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR"
 # Build if requested
 if [ "$BUILD" = true ]; then
   echo ">>> Building JAR..."
-  mvn package -DskipTests -q
+  mvn clean package -DskipTests -q
   echo ">>> Build complete."
 fi
 

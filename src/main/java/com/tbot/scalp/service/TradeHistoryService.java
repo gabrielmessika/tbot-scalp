@@ -17,10 +17,10 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tbot.scalp.config.ScalpConfig;
+import com.tbot.scalp.model.OpenPosition;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import com.tbot.scalp.model.OpenPosition;
 
 @Slf4j
 @Service
@@ -32,7 +32,8 @@ public class TradeHistoryService {
     private final ScalpConfig config;
     private File currentFile;
 
-    public void recordClose(OpenPosition pos, String clientOrderId, double exitPrice, String closeReason, int candlesElapsed) {
+    public void recordClose(OpenPosition pos, String clientOrderId, double exitPrice, String closeReason,
+            int candlesElapsed) {
         try {
             if (currentFile == null) {
                 File dir = new File("./history");
@@ -97,6 +98,19 @@ public class TradeHistoryService {
             return all;
         java.util.Arrays.sort(files, (a, b) -> b.getName().compareTo(a.getName()));
         DateTimeFormatter dtFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+        // Compute cutoff timestamp from liveStartDate config
+        long cutoffMs = 0;
+        String startDate = config.getLiveStartDate();
+        if (startDate != null && !startDate.isBlank()) {
+            try {
+                cutoffMs = java.time.LocalDate.parse(startDate)
+                        .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+            } catch (Exception e) {
+                log.warn("Invalid liveStartDate '{}': {}", startDate, e.getMessage());
+            }
+        }
+
         for (File f : files) {
             try {
                 List<String> lines = Files.readAllLines(f.toPath());
@@ -104,6 +118,18 @@ public class TradeHistoryService {
                     if (line.isBlank())
                         continue;
                     Map<String, Object> entry = mapper.readValue(line, Map.class);
+
+                    // Filter out entries before liveStartDate
+                    if (cutoffMs > 0) {
+                        long openTs = 0;
+                        if (entry.get("openDate") instanceof Number)
+                            openTs = ((Number) entry.get("openDate")).longValue();
+                        else if (entry.get("closeDate") instanceof Number)
+                            openTs = ((Number) entry.get("closeDate")).longValue();
+                        if (openTs > 0 && openTs < cutoffMs)
+                            continue;
+                    }
+
                     // Format dates for display
                     if (entry.get("openDate") instanceof Number) {
                         long ts = ((Number) entry.get("openDate")).longValue();
@@ -126,7 +152,14 @@ public class TradeHistoryService {
     }
 
     public Map<String, Object> getSummary() {
-        List<Map<String, Object>> trades = readAllParsed();
+        return computeSummary(readAllParsed());
+    }
+
+    /**
+     * Compute summary statistics from any list of trade records
+     * (exchange-sourced or local JSONL).
+     */
+    public Map<String, Object> computeSummary(List<Map<String, Object>> trades) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("totalTrades", trades.size());
         if (trades.isEmpty()) {

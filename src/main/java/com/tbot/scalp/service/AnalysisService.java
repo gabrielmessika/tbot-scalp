@@ -34,7 +34,6 @@ public class AnalysisService {
 
     private final ScalpConfig config;
     private final HyperliquidMarketDataService marketDataService;
-    private final HyperliquidWebSocketService wsService;
     private final BinanceBacktestDataService binanceDataService;
     private final IndicatorService indicatorService;
     private final SignalScoringService scoringService;
@@ -147,22 +146,11 @@ public class AnalysisService {
                         continue;
 
                     List<Signal> signals = detectAndScore(candles, coin, tf);
-                    // Filter to recent signals only + price drift check against real-time WS price
+                    // Filter to recent signals only
                     int maxAge = config.getMaxSignalAgeCandlesLive();
                     int minIdx = candles.size() - maxAge;
-                    double wsPrice = wsService.getLatestPrice(coin);
-                    double currentPrice = wsPrice > 0 ? wsPrice : candles.get(candles.size() - 1).getClose();
                     signals.stream()
                             .filter(s -> s.getCandleIndex() >= minIdx)
-                            .filter(s -> {
-                                double drift = Math.abs(s.getEntryPrice() - currentPrice) / currentPrice;
-                                if (drift > 0.015) {
-                                    log.debug("Filtered signal {} {} — price drift {}% > 1.5%",
-                                            s.getDirection(), coin, String.format("%.1f", drift * 100));
-                                    return false;
-                                }
-                                return true;
-                            })
                             .forEach(s -> {
                                 alerts.add(s);
                                 logEntry(logs, "SIGNAL", s.getFormattedAlert());

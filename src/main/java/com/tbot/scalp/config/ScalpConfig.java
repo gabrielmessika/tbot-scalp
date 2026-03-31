@@ -113,6 +113,12 @@ public class ScalpConfig {
     private int liveCandleCount = 300;
     private int maxSignalAgeCandlesLive = 3;
 
+    /**
+     * ISO date (yyyy-MM-dd) from which the bot considers trades as its own.
+     * Positions/history before this date are ignored during recovery and display.
+     */
+    private String liveStartDate = "";
+
     @Data
     public static class TimeframeSettings {
         private Double scoringBonus;

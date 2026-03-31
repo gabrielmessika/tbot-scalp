@@ -4,9 +4,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.http.HttpEntity;
@@ -331,19 +333,20 @@ public class HyperliquidExecutionService {
             String clientOid = entry.getKey();
             PendingOrder pending = entry.getValue();
 
-            // Expired — cancel
-            if (now > pending.expiresAt) {
-                log.info("[EXECUTION] Limit order expired, cancelling: {} {}", pending.order.getPair(), pending.oid);
-                cancelOrder(pending.order.getPair(), pending.oid);
-                pendingOrders.remove(clientOid);
-                continue;
-            }
-
-            // Check if filled via clearinghouseState
+            // Check fill BEFORE expiry — order may have filled in the last window
             try {
                 double fillPrice = checkOrderFilled(pending.order.getPair(), pending.oid);
-                if (fillPrice <= 0)
-                    continue; // still resting
+
+                // Not yet filled — check if expired
+                if (fillPrice <= 0) {
+                    if (now > pending.expiresAt) {
+                        log.info("[EXECUTION] Limit order expired unfilled, cancelling: {} {}",
+                                pending.order.getPair(), pending.oid);
+                        cancelOrder(pending.order.getPair(), pending.oid);
+                        pendingOrders.remove(clientOid);
+                    }
+                    continue;
+                }
 
                 pendingOrders.remove(clientOid);
                 log.info("[EXECUTION] Limit order FILLED {} {} @ fill={} (signal={})",
@@ -696,6 +699,226 @@ public class HyperliquidExecutionService {
         return result;
     }
 
+    /**
+     * Returns OIDs of all open trigger orders (TP/SL) on the exchange.
+     * Used by syncWithExchange to determine which trigger was executed.
+     */
+    public Set<String> getOpenTriggerOrderIds() {
+        Set<String> oids = new HashSet<>();
+        try {
+            String wallet = walletAddress();
+            if (wallet == null)
+                return oids;
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "frontendOpenOrders");
+            req.put("user", wallet);
+            List<Map<String, Object>> orders = postInfoListHeavy(req);
+            if (orders == null)
+                return oids;
+            for (Map<String, Object> order : orders) {
+                String orderType = String.valueOf(order.getOrDefault("orderType", ""));
+                if ("Trigger".equals(orderType)) {
+                    String oid = String.valueOf(order.getOrDefault("oid", ""));
+                    if (!oid.isBlank())
+                        oids.add(oid);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[EXECUTION] getOpenTriggerOrderIds failed: {}", e.getMessage());
+        }
+        return oids;
+    }
+
+    /**
+     * Fetch recent closing fill prices from exchange (userFillsByTime).
+     * Returns map of coin → most recent close fill price.
+     */
+    public Map<String, Double> getRecentCloseFillPrices(long sinceMs) {
+        Map<String, Double> result = new LinkedHashMap<>();
+        try {
+            String wallet = walletAddress();
+            if (wallet == null)
+                return result;
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "userFillsByTime");
+            req.put("user", wallet);
+            req.put("startTime", sinceMs);
+            List<Map<String, Object>> fills = postInfoListHeavy(req);
+            if (fills == null)
+                return result;
+            for (Map<String, Object> fill : fills) {
+                String dir = String.valueOf(fill.getOrDefault("dir", ""));
+                if (dir.startsWith("Close")) {
+                    String coin = String.valueOf(fill.get("coin"));
+                    double px = toDouble(fill.get("px"));
+                    if (px > 0)
+                        result.put(coin, px);
+                }
+            }
+            log.debug("[EXECUTION] Fetched {} recent close fill prices since {}", result.size(), sinceMs);
+        } catch (Exception e) {
+            log.warn("[EXECUTION] getRecentCloseFillPrices failed: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    // ==================== Closed Trades from Exchange ====================
+
+    /**
+     * Fetch all closed trades from HL for the last 30 days via userFillsByTime.
+     * Returns trade records with real closedPnl, fees, and fill prices.
+     * Close reasons default to UNKNOWN and are enriched from local tracking data.
+     */
+    public List<Map<String, Object>> getClosedTrades() {
+        try {
+            String wallet = walletAddress();
+            if (wallet == null)
+                return List.of();
+
+            long startTime = Instant.now().minusSeconds(30L * 24 * 3600).toEpochMilli();
+
+            // Apply liveStartDate filter
+            String startDate = config.getLiveStartDate();
+            if (startDate != null && !startDate.isBlank()) {
+                try {
+                    long cutoff = java.time.LocalDate.parse(startDate)
+                            .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+                    if (cutoff > startTime)
+                        startTime = cutoff;
+                } catch (Exception ignored) {
+                }
+            }
+
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "userFillsByTime");
+            req.put("user", wallet);
+            req.put("startTime", startTime);
+            List<Map<String, Object>> fills = postInfoListHeavy(req);
+            if (fills == null || fills.isEmpty())
+                return List.of();
+
+            // Separate closing and opening fills
+            List<Map<String, Object>> closingFills = new ArrayList<>();
+            Map<String, List<Map<String, Object>>> openFillsByCoin = new LinkedHashMap<>();
+            for (Map<String, Object> fill : fills) {
+                String dir = String.valueOf(fill.getOrDefault("dir", ""));
+                if (dir.startsWith("Close")) {
+                    closingFills.add(fill);
+                } else if (dir.startsWith("Open")) {
+                    String coin = String.valueOf(fill.get("coin"));
+                    openFillsByCoin.computeIfAbsent(coin, k -> new ArrayList<>()).add(fill);
+                }
+            }
+            if (closingFills.isEmpty())
+                return List.of();
+
+            java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter
+                    .ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(java.time.ZoneId.systemDefault());
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Map<String, Object> fill : closingFills) {
+                try {
+                    result.add(buildTradeFromFill(fill, openFillsByCoin, fmt));
+                } catch (Exception e) {
+                    log.warn("[EXECUTION] Failed to parse fill: {}", e.getMessage());
+                }
+            }
+
+            // Sort newest first
+            result.sort((a, b) -> {
+                long ta = a.get("closeTimestamp") instanceof Number n ? n.longValue() : 0;
+                long tb = b.get("closeTimestamp") instanceof Number n ? n.longValue() : 0;
+                return Long.compare(tb, ta);
+            });
+
+            log.debug("[EXECUTION] Fetched {} closed trades from exchange", result.size());
+            return result.size() > 500 ? result.subList(0, 500) : result;
+        } catch (Exception e) {
+            log.warn("[EXECUTION] Failed to fetch closed trades: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Build a trade record from a closing fill.
+     * Entry price is reverse-computed from closedPnl.
+     */
+    private Map<String, Object> buildTradeFromFill(Map<String, Object> fill,
+            Map<String, List<Map<String, Object>>> openFillsByCoin,
+            java.time.format.DateTimeFormatter fmt) {
+
+        String coin = String.valueOf(fill.get("coin"));
+        double exitPrice = toDouble(fill.get("px"));
+        double closedPnl = toDouble(fill.get("closedPnl"));
+        double size = toDouble(fill.get("sz"));
+        double fee = toDouble(fill.get("fee"));
+        long closeTime = ((Number) fill.get("time")).longValue();
+        String dir = String.valueOf(fill.get("dir"));
+        boolean isLiquidation = Boolean.TRUE.equals(fill.get("liquidation"));
+        String oid = String.valueOf(fill.getOrDefault("oid", ""));
+
+        boolean wasLong = dir.contains("Long");
+        String direction = wasLong ? "LONG" : "SHORT";
+
+        // Compute entry price from closedPnl
+        double entryPrice = 0;
+        if (size > 0) {
+            entryPrice = wasLong
+                    ? exitPrice - closedPnl / size
+                    : exitPrice + closedPnl / size;
+        }
+
+        String closeReason = isLiquidation ? "LIQUIDATION" : "UNKNOWN";
+
+        // P&L percent (unleveraged price move)
+        double pnlPercent = entryPrice > 0
+                ? (wasLong ? (exitPrice - entryPrice) / entryPrice : (entryPrice - exitPrice) / entryPrice) * 100
+                : 0;
+
+        // Net P&L (closedPnl already includes the raw P&L, subtract fee for net)
+        double pnlUsd = closedPnl - fee;
+
+        // Find matching opening fill for openDate
+        String openDate = "";
+        List<Map<String, Object>> opens = openFillsByCoin.get(coin);
+        if (opens != null) {
+            for (int i = opens.size() - 1; i >= 0; i--) {
+                long openTime = ((Number) opens.get(i).get("time")).longValue();
+                if (openTime < closeTime) {
+                    openDate = fmt.format(Instant.ofEpochMilli(openTime));
+                    break;
+                }
+            }
+        }
+
+        Map<String, Object> trade = new LinkedHashMap<>();
+        trade.put("openDate", openDate);
+        trade.put("closeDate", fmt.format(Instant.ofEpochMilli(closeTime)));
+        trade.put("closeTimestamp", closeTime);
+        trade.put("pair", coin);
+        trade.put("timeframe", "");
+        trade.put("direction", direction);
+        trade.put("entryPrice", Math.round(entryPrice * 100000.0) / 100000.0);
+        trade.put("exitPrice", exitPrice);
+        trade.put("stopLoss", 0.0);
+        trade.put("takeProfit", 0.0);
+        trade.put("leverage", 0);
+        trade.put("quantity", size);
+        trade.put("positionSizeUsd", Math.round(entryPrice * size * 100.0) / 100.0);
+        trade.put("score", 0.0);
+        trade.put("closeReason", closeReason);
+        trade.put("pnlPercent", Math.round(pnlPercent * 100.0) / 100.0);
+        trade.put("pnlUsd", Math.round(pnlUsd * 100.0) / 100.0);
+        trade.put("feeUsd", Math.round(fee * 100.0) / 100.0);
+        trade.put("candlesElapsed", 0);
+        trade.put("breakEvenApplied", false);
+        trade.put("dryRun", false);
+        trade.put("exchange", "hyperliquid");
+        trade.put("clientOrderId", oid);
+        return trade;
+    }
+
     public boolean hasPendingOrders() {
         return !pendingOrders.isEmpty();
     }
@@ -742,18 +965,15 @@ public class HyperliquidExecutionService {
 
         if (tp > 0) {
             try {
+                // TP as GTC limit order (maker rebate instead of taker fee)
                 long nonce = Instant.now().toEpochMilli();
                 Map<String, Object> tpOrder = new LinkedHashMap<>();
                 tpOrder.put("a", assetIndex);
                 tpOrder.put("b", !mainIsBuy);
                 tpOrder.put("p", formatPrice(tp, szDecimals));
                 tpOrder.put("s", sizeWire);
-                tpOrder.put("r", true);
-                Map<String, Object> tpTrigger = new LinkedHashMap<>();
-                tpTrigger.put("isMarket", true);
-                tpTrigger.put("triggerPx", formatPrice(tp, szDecimals));
-                tpTrigger.put("tpsl", "tp");
-                tpOrder.put("t", orderedMap("trigger", tpTrigger));
+                tpOrder.put("r", true); // reduce-only
+                tpOrder.put("t", orderedMap("limit", orderedMap("tif", "Gtc")));
                 Map<String, Object> action = new LinkedHashMap<>();
                 action.put("type", "order");
                 action.put("orders", List.of(tpOrder));
@@ -761,21 +981,26 @@ public class HyperliquidExecutionService {
                 Map<String, Object> resp = postExchange(action, nonce);
                 oids[0] = extractTriggerOid(resp, "TP", tp, pair);
             } catch (Exception e) {
-                log.error("[EXECUTION] CRITICAL: Failed TP trigger for {}: {}", pair, e.getMessage());
+                log.error("[EXECUTION] CRITICAL: Failed TP order for {}: {}", pair, e.getMessage());
             }
         }
 
         if (sl > 0) {
             try {
+                // SL as trigger limit with 0.1% buffer below trigger (maker-friendly, reduce
+                // slippage)
+                // For LONG: sell limit at sl * 0.999 triggers when price falls to sl
+                // For SHORT: buy limit at sl * 1.001 triggers when price rises to sl
+                double slLimitPx = mainIsBuy ? sl * 0.999 : sl * 1.001;
                 long nonce = Instant.now().toEpochMilli();
                 Map<String, Object> slOrder = new LinkedHashMap<>();
                 slOrder.put("a", assetIndex);
                 slOrder.put("b", !mainIsBuy);
-                slOrder.put("p", formatPrice(sl, szDecimals));
+                slOrder.put("p", formatPrice(slLimitPx, szDecimals));
                 slOrder.put("s", sizeWire);
                 slOrder.put("r", true);
                 Map<String, Object> slTrigger = new LinkedHashMap<>();
-                slTrigger.put("isMarket", true);
+                slTrigger.put("isMarket", false);
                 slTrigger.put("triggerPx", formatPrice(sl, szDecimals));
                 slTrigger.put("tpsl", "sl");
                 slOrder.put("t", orderedMap("trigger", slTrigger));

@@ -243,36 +243,43 @@ public class PositionManagerService {
                 }
             }
 
-            // Check each tracked position: if not on exchange, it was closed (TP/SL hit)
+            // Collect vanished positions
+            List<Map.Entry<String, OpenPosition>> vanished = new ArrayList<>();
             for (var entry : List.copyOf(openPositions.entrySet())) {
-                OpenPosition pos = entry.getValue();
-                String coin = HyperliquidMarketDataService.toHyperliquidCoin(pos.getPair());
-
+                String coin = HyperliquidMarketDataService.toHyperliquidCoin(entry.getValue().getPair());
                 if (!exchangeCoins.contains(coin)) {
-                    // Position no longer on exchange — closed by trigger order
-                    log.info("[SYNC] Position {} {} no longer on exchange — trigger hit",
+                    vanished.add(entry);
+                }
+            }
+
+            if (!vanished.isEmpty()) {
+                // Query trigger orders + real fill prices once for ALL vanished positions
+                java.util.Set<String> openTriggerOids = executionService.getOpenTriggerOrderIds();
+                long sinceMs = java.time.Instant.now().minusSeconds(2 * 3600).toEpochMilli();
+                Map<String, Double> realFillPrices = executionService.getRecentCloseFillPrices(sinceMs);
+
+                for (var entry : vanished) {
+                    OpenPosition pos = entry.getValue();
+                    String coin = HyperliquidMarketDataService.toHyperliquidCoin(pos.getPair());
+
+                    log.info("[SYNC] Position {} {} no longer on exchange — determining close reason",
                             pos.getDirection(), pos.getPair());
 
-                    // Determine if TP or SL hit based on current price
-                    double currentPrice = pos.getCurrentPrice();
-                    String reason;
+                    // 1. Determine close reason from trigger OIDs (authoritative)
+                    String reason = inferCloseReason(pos, openTriggerOids);
+
+                    // 2. Use real fill price from exchange if available
+                    Double realFill = realFillPrices.get(coin);
                     double exitPrice;
-                    if ("LONG".equals(pos.getDirection())) {
-                        if (currentPrice >= pos.getTakeProfit() * 0.998) {
-                            reason = "TP_HIT";
-                            exitPrice = pos.getTakeProfit();
-                        } else {
-                            reason = "SL_HIT";
-                            exitPrice = pos.getStopLoss();
-                        }
+                    if (realFill != null && realFill > 0) {
+                        exitPrice = realFill;
+                        log.info("[SYNC] {} {} real fill from exchange: {} (SL={}, TP={})",
+                                pos.getPair(), reason, exitPrice, pos.getStopLoss(), pos.getTakeProfit());
                     } else {
-                        if (currentPrice <= pos.getTakeProfit() * 1.002) {
-                            reason = "TP_HIT";
-                            exitPrice = pos.getTakeProfit();
-                        } else {
-                            reason = "SL_HIT";
-                            exitPrice = pos.getStopLoss();
-                        }
+                        // Fallback to theoretical level based on reason
+                        exitPrice = "TP_HIT".equals(reason) ? pos.getTakeProfit() : pos.getStopLoss();
+                        log.info("[SYNC] {} {} no real fill found, using theoretical: {}",
+                                pos.getPair(), reason, exitPrice);
                     }
 
                     // Remove from tracking (bypass closePosition to avoid re-closing on exchange)
@@ -281,7 +288,8 @@ public class PositionManagerService {
                     lastContraryDirection.remove(pos.getPair());
 
                     pos.setCloseReason(reason);
-                    historyService.recordClose(pos, pos.getClientOrderId(), exitPrice, reason, pos.getCandlesElapsed());
+                    historyService.recordClose(pos, pos.getClientOrderId(), exitPrice, reason,
+                            pos.getCandlesElapsed());
 
                     long cooldownMs = config.getCooldownMultiplier()
                             * config.getTimeframeDurationMs(pos.getTimeframe());
@@ -300,8 +308,46 @@ public class PositionManagerService {
     }
 
     /**
+     * Determine close reason by checking which trigger orders are still pending.
+     * When HL executes TP, it cancels SL (and vice versa).
+     * - TP trigger still pending → SL was executed → SL_HIT
+     * - SL trigger still pending → TP was executed → TP_HIT
+     * - Neither/both → fallback to price proximity
+     */
+    private String inferCloseReason(OpenPosition pos, java.util.Set<String> openTriggerOids) {
+        String tpOid = pos.getTpTriggerId();
+        String slOid = pos.getSlTriggerId();
+
+        if (tpOid != null || slOid != null) {
+            boolean tpStillOpen = tpOid != null && openTriggerOids.contains(tpOid);
+            boolean slStillOpen = slOid != null && openTriggerOids.contains(slOid);
+
+            if (slStillOpen && !tpStillOpen) {
+                log.debug("[SYNC] {} — TP gone, SL {} still open → TP_HIT", pos.getPair(), slOid);
+                return "TP_HIT";
+            }
+            if (tpStillOpen && !slStillOpen) {
+                log.debug("[SYNC] {} — SL gone, TP {} still open → SL_HIT", pos.getPair(), tpOid);
+                return "SL_HIT";
+            }
+            log.debug("[SYNC] {} — TP open={}, SL open={} — falling back to price inference",
+                    pos.getPair(), tpStillOpen, slStillOpen);
+        }
+
+        // Fallback: infer from current price proximity
+        double distToTp = Math.abs(pos.getCurrentPrice() - pos.getTakeProfit());
+        double distToSl = Math.abs(pos.getCurrentPrice() - pos.getStopLoss());
+        String reason = distToTp <= distToSl ? "TP_HIT" : "SL_HIT";
+        log.debug("[SYNC] {} price={} distTP={} distSL={} → {}",
+                pos.getPair(), pos.getCurrentPrice(), distToTp, distToSl, reason);
+        return reason;
+    }
+
+    /**
      * Recover positions from exchange at startup.
      * Rebuilds tracking with conservative parameters.
+     * Only recovers positions that have a matching journal entry (= opened by the
+     * bot).
      */
     public void recoverPositions() {
         if (!config.isLiveTrading())
@@ -314,6 +360,18 @@ public class PositionManagerService {
                 return;
             }
 
+            // Build set of coins that the bot has journal entries for (FILLED or
+            // PENDING_FILL)
+            java.util.Set<String> botCoins = new java.util.HashSet<>();
+            List<Map<String, Object>> journalEntries = journalService.readAllParsed();
+            for (Map<String, Object> je : journalEntries) {
+                String status = String.valueOf(je.getOrDefault("status", ""));
+                if ("FILLED".equals(status) || "PENDING_FILL".equals(status) || "DRY_RUN".equals(status)) {
+                    botCoins.add(String.valueOf(je.getOrDefault("pair", "")));
+                }
+            }
+            log.info("[RECOVERY] Known bot coins from journal: {}", botCoins);
+
             for (Map<String, Object> ep : exchangePositions) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> pos = (Map<String, Object>) ep.get("position");
@@ -324,6 +382,12 @@ public class PositionManagerService {
                 double szi = toDouble(pos.get("szi"));
                 if (szi == 0)
                     continue;
+
+                // Skip positions not opened by the bot (no journal entry)
+                if (!botCoins.contains(coin)) {
+                    log.info("[RECOVERY] Skipping pre-bot position {} (no journal entry)", coin);
+                    continue;
+                }
 
                 String direction = szi > 0 ? "LONG" : "SHORT";
                 double qty = Math.abs(szi);

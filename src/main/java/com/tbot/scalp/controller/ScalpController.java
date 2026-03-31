@@ -298,13 +298,32 @@ public class ScalpController {
 
     // ==================== Trade History ====================
 
+    /**
+     * In live mode: fetches real trades from HL (closedPnl, fees, fill prices),
+     * enriched with bot-tracked data (closeReason, TF, score, SL/TP).
+     * In dry-run: reads from local JSONL files.
+     */
     @GetMapping("/history")
     public ResponseEntity<List<Map<String, Object>>> history() {
+        if (config.isLiveTrading()) {
+            List<Map<String, Object>> exchangeTrades = executionService.getClosedTrades();
+            if (!exchangeTrades.isEmpty()) {
+                enrichCloseReasons(exchangeTrades);
+                return ResponseEntity.ok(exchangeTrades);
+            }
+        }
         return ResponseEntity.ok(historyService.readAllParsed());
     }
 
     @GetMapping("/history/summary")
     public ResponseEntity<Map<String, Object>> historySummary() {
+        if (config.isLiveTrading()) {
+            List<Map<String, Object>> exchangeTrades = executionService.getClosedTrades();
+            if (!exchangeTrades.isEmpty()) {
+                enrichCloseReasons(exchangeTrades);
+                return ResponseEntity.ok(historyService.computeSummary(exchangeTrades));
+            }
+        }
         return ResponseEntity.ok(historyService.getSummary());
     }
 
@@ -312,7 +331,19 @@ public class ScalpController {
 
     @GetMapping("/stats")
     public ResponseEntity<Map<String, Object>> tradeStats() {
-        List<Map<String, Object>> trades = historyService.readAllParsed();
+        List<Map<String, Object>> trades;
+        if (config.isLiveTrading()) {
+            List<Map<String, Object>> exchangeTrades = executionService.getClosedTrades();
+            if (!exchangeTrades.isEmpty()) {
+                enrichCloseReasons(exchangeTrades);
+                trades = exchangeTrades;
+            } else {
+                trades = historyService.readAllParsed();
+            }
+        } else {
+            trades = historyService.readAllParsed();
+        }
+
         Map<String, Object> stats = new LinkedHashMap<>();
 
         if (trades.isEmpty()) {
@@ -429,6 +460,118 @@ public class ScalpController {
         s.put("worstTrade", Math.round(worst * 100.0) / 100.0);
         s.put("profitFactor", grossLoss > 0 ? Math.round(grossProfit / grossLoss * 100.0) / 100.0 : 0.0);
         return s;
+    }
+
+    // ==================== Enrich Exchange Trades ====================
+
+    /**
+     * Enrich exchange trades with close reasons + bot data from local JSONL files.
+     * Matches by pair + close time (within 10 minutes tolerance).
+     */
+    private void enrichCloseReasons(List<Map<String, Object>> exchangeTrades) {
+        try {
+            List<Map<String, Object>> localTrades = historyService.readAllParsed();
+            if (localTrades.isEmpty())
+                return;
+
+            java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter
+                    .ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(java.time.ZoneId.systemDefault());
+
+            // Build exact and fuzzy lookup from local trades
+            java.util.Map<String, Map<String, Object>> exactLookup = new java.util.HashMap<>();
+            List<long[]> localTimestamps = new java.util.ArrayList<>();
+            List<String> localPairs = new java.util.ArrayList<>();
+            List<Map<String, Object>> localRecords = new java.util.ArrayList<>();
+
+            for (int i = 0; i < localTrades.size(); i++) {
+                Map<String, Object> local = localTrades.get(i);
+                String pair = String.valueOf(local.getOrDefault("pair", ""));
+                String closeDate = String.valueOf(local.getOrDefault("closeDate", ""));
+                String reason = String.valueOf(local.getOrDefault("closeReason", ""));
+                if (pair.isEmpty() || reason.isEmpty() || "UNKNOWN".equals(reason))
+                    continue;
+
+                exactLookup.put(pair + "|" + closeDate, local);
+                try {
+                    long ts = java.time.LocalDateTime.parse(closeDate, fmt)
+                            .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+                    localTimestamps.add(new long[] { i, ts });
+                    localPairs.add(pair);
+                    localRecords.add(local);
+                } catch (Exception ignored) {
+                }
+            }
+
+            for (Map<String, Object> trade : exchangeTrades) {
+                String reason = String.valueOf(trade.getOrDefault("closeReason", "UNKNOWN"));
+                if (!"UNKNOWN".equals(reason))
+                    continue;
+
+                String pair = String.valueOf(trade.getOrDefault("pair", ""));
+                String closeDate = String.valueOf(trade.getOrDefault("closeDate", ""));
+
+                // Try exact match
+                Map<String, Object> matched = exactLookup.get(pair + "|" + closeDate);
+                if (matched != null) {
+                    enrichFromLocal(trade, matched);
+                    continue;
+                }
+
+                // Fuzzy match: same pair, close time within 10 minutes
+                long closeTs = trade.get("closeTimestamp") instanceof Number n ? n.longValue() : 0;
+                boolean found = false;
+                if (closeTs > 0) {
+                    for (int i = 0; i < localTimestamps.size(); i++) {
+                        if (pair.equals(localPairs.get(i))
+                                && Math.abs(closeTs - localTimestamps.get(i)[1]) < 600_000) {
+                            enrichFromLocal(trade, localRecords.get(i));
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback: infer from P&L sign
+                if (!found) {
+                    double pnl = toDoubleOrZero(trade.get("pnlPercent"));
+                    trade.put("closeReason", pnl > 0 ? "TP_HIT" : "SL_HIT");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("enrichCloseReasons failed: {}", e.getMessage());
+        }
+    }
+
+    private void enrichFromLocal(Map<String, Object> trade, Map<String, Object> local) {
+        trade.put("closeReason", local.getOrDefault("closeReason", "UNKNOWN"));
+        if (toDoubleOrZero(trade.get("stopLoss")) == 0)
+            trade.put("stopLoss", local.getOrDefault("stopLoss", 0.0));
+        if (toDoubleOrZero(trade.get("takeProfit")) == 0)
+            trade.put("takeProfit", local.getOrDefault("takeProfit", 0.0));
+        if (toIntOrZero(trade.get("leverage")) == 0)
+            trade.put("leverage", local.getOrDefault("leverage", 0));
+        if (trade.get("timeframe") == null || trade.get("timeframe").toString().isEmpty())
+            trade.put("timeframe", local.getOrDefault("timeframe", ""));
+        if (toDoubleOrZero(trade.get("score")) == 0)
+            trade.put("score", local.getOrDefault("score", 0.0));
+        if (toIntOrZero(trade.get("candlesElapsed")) == 0)
+            trade.put("candlesElapsed", local.getOrDefault("candlesElapsed", 0));
+        Object localBe = local.get("breakEvenApplied");
+        if (localBe instanceof Boolean b && b)
+            trade.put("breakEvenApplied", true);
+    }
+
+    private double toDoubleOrZero(Object val) {
+        if (val instanceof Number n)
+            return n.doubleValue();
+        return 0;
+    }
+
+    private int toIntOrZero(Object val) {
+        if (val instanceof Number n)
+            return n.intValue();
+        return 0;
     }
 
     // ==================== Application Logs ====================
