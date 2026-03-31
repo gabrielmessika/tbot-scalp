@@ -3,6 +3,7 @@ package com.tbot.scalp.service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,47 +80,96 @@ public class HyperliquidExecutionService {
 
     // ==================== Balance ====================
 
+    /**
+     * Get available balance (free collateral) from exchange.
+     * Returns Double.NaN on API failure to distinguish from legitimate
+     * zero/negative balance.
+     */
     public double getAvailableBalance() {
         try {
             String wallet = walletAddress();
-            if (wallet == null)
+            if (wallet == null) {
+                if (config.isLiveTrading()) {
+                    log.error("[EXECUTION] Live mode but no wallet configured — cannot fetch balance");
+                    return Double.NaN;
+                }
                 return config.getDryRunBalance();
+            }
             Map<String, Object> req = new LinkedHashMap<>();
             req.put("type", "clearinghouseState");
             req.put("user", wallet);
             Map<String, Object> res = postInfo(req);
             if (res == null)
-                return 0;
+                return Double.NaN;
             Map<String, Object> marginSummary = (Map<String, Object>) res.get("marginSummary");
             if (marginSummary == null)
-                return 0;
+                return Double.NaN;
             double accountValue = toDouble(marginSummary.get("accountValue"));
             double totalMarginUsed = toDouble(marginSummary.get("totalMarginUsed"));
-            return accountValue - totalMarginUsed;
+            double perpsBalance = accountValue - totalMarginUsed;
+
+            // Unified account (Portfolio Margin): USDC sits in spot, perps shows 0
+            if (perpsBalance == 0) {
+                double spotUsdc = getSpotUsdcBalance();
+                if (spotUsdc > 0) {
+                    log.debug("[EXECUTION] Perps balance=0, using spot USDC: {}", spotUsdc);
+                    return spotUsdc;
+                }
+            }
+            return perpsBalance;
         } catch (Exception e) {
             log.warn("[EXECUTION] Failed to fetch balance: {}", e.getMessage());
-            return 0;
+            return Double.NaN;
         }
     }
 
+    /**
+     * Get total equity (accountValue) from exchange.
+     * Returns Double.NaN on API failure to distinguish from legitimate zero
+     * balance.
+     */
     public double getEquity() {
         try {
             String wallet = walletAddress();
-            if (wallet == null)
+            if (wallet == null) {
+                if (config.isLiveTrading()) {
+                    log.error("[EXECUTION] Live mode but no wallet configured — cannot fetch equity");
+                    return Double.NaN;
+                }
                 return config.getDryRunBalance();
+            }
             Map<String, Object> req = new LinkedHashMap<>();
             req.put("type", "clearinghouseState");
             req.put("user", wallet);
             Map<String, Object> res = postInfo(req);
             if (res == null)
-                return 0;
+                return Double.NaN;
             Map<String, Object> marginSummary = (Map<String, Object>) res.get("marginSummary");
             if (marginSummary == null)
-                return 0;
-            return toDouble(marginSummary.get("accountValue"));
+                return Double.NaN;
+            double accountValue = toDouble(marginSummary.get("accountValue"));
+            double marginUsed = toDouble(marginSummary.get("totalMarginUsed"));
+
+            // Unified account (Portfolio Margin): USDC in spot, perps accountValue=0
+            double spotTotal = getSpotUsdcTotal();
+            if (spotTotal > 0) {
+                double perpsPnl = accountValue - marginUsed;
+                return spotTotal + perpsPnl;
+            }
+
+            if (accountValue > 0)
+                return accountValue;
+
+            // Both perps and spot returned 0 — likely API issue on unified account
+            // Return NaN to avoid false 100% drawdown (same pattern as getAvailableBalance)
+            if (config.isLiveTrading()) {
+                log.warn("[EXECUTION] Equity=0 on live account — likely API issue, returning NaN");
+                return Double.NaN;
+            }
+            return 0;
         } catch (Exception e) {
             log.warn("[EXECUTION] Failed to fetch equity: {}", e.getMessage());
-            return 0;
+            return Double.NaN;
         }
     }
 
@@ -361,7 +411,7 @@ public class HyperliquidExecutionService {
             req.put("type", "userFillsByTime");
             req.put("user", wallet);
             req.put("startTime", since);
-            List<Map<String, Object>> fills = postInfoList(req);
+            List<Map<String, Object>> fills = postInfoListHeavy(req);
             if (fills == null)
                 return 0;
             for (Map<String, Object> fill : fills) {
@@ -607,12 +657,80 @@ public class HyperliquidExecutionService {
                 .toList();
     }
 
+    /**
+     * Fetch open trigger orders (TP/SL) for a specific coin from exchange.
+     * Returns [tpPrice, slPrice] — 0 if not found.
+     * Uses frontendOpenOrders (heavy weight 20).
+     */
+    public double[] getTriggerPricesForCoin(String coin) {
+        double[] result = { 0, 0 }; // [0]=TP, [1]=SL
+        try {
+            String wallet = walletAddress();
+            if (wallet == null)
+                return result;
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "frontendOpenOrders");
+            req.put("user", wallet);
+            List<Map<String, Object>> orders = postInfoListHeavy(req);
+            if (orders == null)
+                return result;
+            for (Map<String, Object> order : orders) {
+                String orderCoin = String.valueOf(order.getOrDefault("coin", ""));
+                if (!coin.equals(orderCoin))
+                    continue;
+                String orderType = String.valueOf(order.getOrDefault("orderType", ""));
+                if (!"Trigger".equals(orderType))
+                    continue;
+                double triggerPx = toDouble(order.get("triggerPx"));
+                // Detect TP vs SL by triggerCondition or tpsl field
+                String tpsl = String.valueOf(order.getOrDefault("tpsl", ""));
+                if ("tp".equals(tpsl) && triggerPx > 0) {
+                    result[0] = triggerPx;
+                } else if ("sl".equals(tpsl) && triggerPx > 0) {
+                    result[1] = triggerPx;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[EXECUTION] getTriggerPricesForCoin({}) failed: {}", coin, e.getMessage());
+        }
+        return result;
+    }
+
     public boolean hasPendingOrders() {
         return !pendingOrders.isEmpty();
     }
 
     public int pendingOrderCount() {
         return pendingOrders.size();
+    }
+
+    /**
+     * Returns details of all pending limit orders for UI display.
+     */
+    public List<Map<String, Object>> getPendingOrderDetails() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (var entry : pendingOrders.entrySet()) {
+            PendingOrder p = entry.getValue();
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("clientOrderId", entry.getKey());
+            detail.put("exchangeOrderId", p.oid());
+            detail.put("pair", p.order().getPair());
+            detail.put("direction", p.order().getDirection());
+            detail.put("timeframe", p.order().getTimeframe());
+            detail.put("limitPrice", p.order().getEntryPrice());
+            detail.put("stopLoss", p.order().getStopLoss());
+            detail.put("takeProfit", p.order().getTakeProfit());
+            detail.put("leverage", p.leverage());
+            detail.put("quantity", p.filledQty());
+            detail.put("positionSizeUsd", p.order().getPositionSizeUsd());
+            detail.put("score", p.order().getScore());
+            detail.put("placedAt", p.order().getSignalTimestamp());
+            detail.put("expiresAt", p.expiresAt());
+            detail.put("remainingMs", Math.max(0, p.expiresAt() - now));
+            result.add(detail);
+        }
+        return result;
     }
 
     // ==================== Trigger Orders ====================
@@ -747,6 +865,14 @@ public class HyperliquidExecutionService {
         return restTemplate.postForObject(url, new HttpEntity<>(body, headers), List.class);
     }
 
+    private List<Map<String, Object>> postInfoListHeavy(Map<String, Object> body) {
+        rateLimiter.acquireInfoHeavy();
+        String url = config.getHyperliquidApiUrl() + "/info";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return restTemplate.postForObject(url, new HttpEntity<>(body, headers), List.class);
+    }
+
     // ==================== Formatting ====================
 
     private String formatPrice(double price, int szDecimals) {
@@ -800,6 +926,65 @@ public class HyperliquidExecutionService {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put(key, value);
         return map;
+    }
+
+    /**
+     * Spot USDC available balance (total - hold) for unified/Portfolio Margin
+     * accounts.
+     */
+    @SuppressWarnings("unchecked")
+    private double getSpotUsdcBalance() {
+        String wallet = walletAddress();
+        if (wallet == null)
+            return 0;
+        try {
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "spotClearinghouseState");
+            req.put("user", wallet);
+            Map<String, Object> res = postInfo(req);
+            if (res == null)
+                return 0;
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) res.get("balances");
+            if (balances == null)
+                return 0;
+            for (Map<String, Object> bal : balances) {
+                if ("USDC".equals(bal.get("coin"))) {
+                    return toDouble(bal.get("total")) - toDouble(bal.get("hold"));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[EXECUTION] Failed to fetch spot balance: {}", e.getMessage());
+        }
+        return 0;
+    }
+
+    /**
+     * Total spot USDC (including held) for equity calculation in unified accounts.
+     */
+    @SuppressWarnings("unchecked")
+    private double getSpotUsdcTotal() {
+        String wallet = walletAddress();
+        if (wallet == null)
+            return 0;
+        try {
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("type", "spotClearinghouseState");
+            req.put("user", wallet);
+            Map<String, Object> res = postInfo(req);
+            if (res == null)
+                return 0;
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) res.get("balances");
+            if (balances == null)
+                return 0;
+            for (Map<String, Object> bal : balances) {
+                if ("USDC".equals(bal.get("coin"))) {
+                    return toDouble(bal.get("total"));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[EXECUTION] Failed to fetch spot total: {}", e.getMessage());
+        }
+        return 0;
     }
 
     private String walletAddress() {

@@ -249,6 +249,14 @@ public class HyperliquidMarketDataService {
                 cursor = chunkEnd;
             }
             allCandles.sort(Comparator.comparingLong(Candle::getTimestamp));
+            // Remove the last candle if it is still forming (its close time hasn't been reached yet)
+            if (!allCandles.isEmpty()) {
+                Candle last = allCandles.get(allCandles.size() - 1);
+                if (last.getTimestamp() + intervalMs > now) {
+                    allCandles.remove(allCandles.size() - 1);
+                    log.debug("Removed incomplete candle {} {} ts={}", pair, interval, last.getTimestamp());
+                }
+            }
         } catch (Exception e) {
             log.error("Failed to fetch recent candles for {} {}: {}", pair, interval, e.getMessage());
         }

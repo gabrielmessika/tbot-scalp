@@ -231,8 +231,10 @@ public class ScalpController {
         Map<String, Object> result = new LinkedHashMap<>();
         if (config.isLiveTrading()) {
             result.put("mode", "live");
-            result.put("balance", executionService.getAvailableBalance());
-            result.put("equity", executionService.getEquity());
+            double b = executionService.getAvailableBalance();
+            double e = executionService.getEquity();
+            result.put("balance", Double.isNaN(b) ? 0 : b);
+            result.put("equity", Double.isNaN(e) ? 0 : e);
         } else {
             result.put("mode", "dry-run");
             result.put("balance", orderManager.getEffectiveBalance());
@@ -258,6 +260,7 @@ public class ScalpController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("count", positionManager.pendingOrderCount());
         result.put("hasPending", positionManager.hasPendingOrders());
+        result.put("orders", positionManager.getPendingOrderDetails());
         return ResponseEntity.ok(result);
     }
 
@@ -265,7 +268,32 @@ public class ScalpController {
 
     @GetMapping("/trades")
     public ResponseEntity<List<Map<String, Object>>> trades() {
-        return ResponseEntity.ok(journalService.readAllParsed());
+        List<Map<String, Object>> journal = journalService.readAllParsed();
+
+        // Build index of closed trades by clientOrderId for O(1) lookup
+        Map<String, Map<String, Object>> closedByOrderId = new java.util.HashMap<>();
+        for (Map<String, Object> h : historyService.readAllParsed()) {
+            Object cid = h.get("clientOrderId");
+            if (cid != null)
+                closedByOrderId.put(String.valueOf(cid), h);
+        }
+
+        // Annotate journal entries with close info when available
+        for (Map<String, Object> entry : journal) {
+            Object cid = entry.get("clientOrderId");
+            if (cid != null) {
+                Map<String, Object> closed = closedByOrderId.get(String.valueOf(cid));
+                if (closed != null) {
+                    entry.put("closeReason", closed.get("closeReason"));
+                    entry.put("exitPrice", closed.get("exitPrice"));
+                    entry.put("closeDate", closed.get("closeDate"));
+                    entry.put("pnlPercent", closed.get("pnlPercent"));
+                    entry.put("pnlUsd", closed.get("pnlUsd"));
+                }
+            }
+        }
+
+        return ResponseEntity.ok(journal);
     }
 
     // ==================== Trade History ====================

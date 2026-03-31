@@ -56,6 +56,7 @@ export function statusBadge(status) {
     const map = {
         'DRY_RUN': 'badge-dryrun',
         'FILLED': 'badge-filled',
+        'PENDING_FILL': 'badge-pending-fill',
         'RISK_REJECTED': 'badge-risk-rejected',
         'REJECTED': 'badge-rejected',
     };

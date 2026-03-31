@@ -4,7 +4,7 @@ import { formatPrice, formatUsd, formatPercent, pnlClass, directionBadge, reason
 // ==================== TRADES TAB ====================
 
 export async function refreshTrades() {
-    await Promise.all([refreshExecStatus(), refreshRisk(), refreshPositions(), refreshJournal()]);
+    await Promise.all([refreshExecStatus(), refreshRisk(), refreshPositions(), refreshPendingOrders(), refreshJournal()]);
 }
 
 async function refreshExecStatus() {
@@ -54,11 +54,16 @@ async function refreshRisk() {
         }
 
         // Positions card
+        const pendingCount = data.pendingOrders || 0;
+        const pendingLabel = pendingCount > 0
+            ? `<div class="stat-detail" style="color:var(--accent-orange)"><i class="bi bi-hourglass-split"></i> ${pendingCount} pending limit</div>`
+            : '';
         const posCard = `
             <div class="col-md-2 col-6"><div class="stat-card">
                 <div class="stat-label">Positions</div>
                 <div class="stat-value">${r.openPositions || 0} / ${r.maxPositions || '?'}</div>
                 ${r.openPairs?.length ? `<div class="stat-detail">${r.openPairs.join(', ')}</div>` : ''}
+                ${pendingLabel}
             </div></div>`;
 
         // Daily P&L
@@ -181,6 +186,56 @@ async function refreshPositions() {
             tbody.appendChild(tr);
         }
     } catch (e) { console.error('Positions error:', e); }
+}
+
+async function refreshPendingOrders() {
+    try {
+        const data = await fetchJson('/api/bot/pending-orders');
+        const card = el('pending-orders-card');
+        const tbody = el('pending-orders-body');
+
+        if (!data || !data.orders || data.orders.length === 0) {
+            card.style.display = 'none';
+            return;
+        }
+
+        card.style.display = 'block';
+        el('pending-orders-count').textContent = `${data.orders.length} pending`;
+
+        tbody.innerHTML = '';
+        for (const p of data.orders) {
+            const remainSec = Math.floor((p.remainingMs || 0) / 1000);
+            const mins = Math.floor(remainSec / 60);
+            const secs = remainSec % 60;
+            const expiryText = remainSec > 0
+                ? `${mins}m ${secs}s`
+                : '<span class="text-danger">Expiring...</span>';
+            const expiryBarPct = p.expiresAt && p.placedAt
+                ? Math.max(0, Math.min(100, p.remainingMs / (p.expiresAt - p.placedAt) * 100))
+                : 50;
+            const expiryColor = expiryBarPct > 50 ? 'var(--accent-blue, #4a9eff)' : expiryBarPct > 20 ? 'var(--accent-orange)' : 'var(--accent-red)';
+
+            const tr = document.createElement('tr');
+            tr.className = 'pending-order-row';
+            tr.innerHTML = `
+                <td class="fw-bold">${p.pair}</td>
+                <td>${directionBadge(p.direction)}</td>
+                <td><span class="badge bg-secondary">${p.timeframe || '—'}</span></td>
+                <td>${formatPrice(p.limitPrice)}</td>
+                <td class="text-danger">${formatPrice(p.stopLoss)}</td>
+                <td class="text-success">${formatPrice(p.takeProfit)}</td>
+                <td>x${p.leverage}</td>
+                <td>${p.positionSizeUsd ? '$' + Number(p.positionSizeUsd).toFixed(0) : '—'}</td>
+                <td>${p.score?.toFixed(1) || '—'}</td>
+                <td>
+                    <div class="risk-gauge" style="width:60px"><div class="risk-gauge-fill" style="width:${expiryBarPct}%;background:${expiryColor}"></div></div>
+                    <small>${expiryText}</small>
+                </td>
+                <td><span class="badge badge-pending-fill"><i class="bi bi-hourglass-split me-1"></i>Waiting fill</span></td>
+            `;
+            tbody.appendChild(tr);
+        }
+    } catch (e) { console.error('Pending orders error:', e); }
 }
 
 async function refreshJournal() {

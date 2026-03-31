@@ -32,7 +32,7 @@ public class TradeHistoryService {
     private final ScalpConfig config;
     private File currentFile;
 
-    public void recordClose(OpenPosition pos, double exitPrice, String closeReason, int candlesElapsed) {
+    public void recordClose(OpenPosition pos, String clientOrderId, double exitPrice, String closeReason, int candlesElapsed) {
         try {
             if (currentFile == null) {
                 File dir = new File("./history");
@@ -75,6 +75,8 @@ public class TradeHistoryService {
             entry.put("breakEvenApplied", pos.isBreakEvenApplied());
             entry.put("dryRun", pos.isDryRun());
             entry.put("exchange", pos.getExchange());
+            if (clientOrderId != null)
+                entry.put("clientOrderId", clientOrderId);
 
             try (var writer = new FileWriter(currentFile, true)) {
                 writer.write(mapper.writeValueAsString(entry) + "\n");

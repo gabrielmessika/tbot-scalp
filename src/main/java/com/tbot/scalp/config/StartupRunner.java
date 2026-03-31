@@ -52,6 +52,24 @@ public class StartupRunner {
                 startupPhase = "Loading exchange metadata";
                 marketDataService.refreshMeta();
 
+                // Phase 3b: Verify live credentials
+                if (config.isLiveTrading()) {
+                    if (config.getHyperliquidPrivateKey() == null || config.getHyperliquidPrivateKey().isBlank()) {
+                        log.error("\u274c LIVE MODE enabled but scalp.hyperliquid-private-key is not set!");
+                        startupPhase = "\u274c Missing private key for live trading";
+                        startupComplete = true;
+                        return;
+                    }
+                    if (config.getHyperliquidWalletAddress() == null
+                            || config.getHyperliquidWalletAddress().isBlank()) {
+                        log.error("\u274c LIVE MODE enabled but scalp.hyperliquid-wallet-address is not set!");
+                        startupPhase = "\u274c Missing wallet address for live trading";
+                        startupComplete = true;
+                        return;
+                    }
+                    log.info("\u2705 Live credentials OK (wallet={})", config.getHyperliquidWalletAddress());
+                }
+
                 // Phase 4: Connect WebSocket
                 if (config.isAutoTrade()) {
                     startupPhase = "Connecting WebSocket";

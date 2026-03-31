@@ -281,7 +281,7 @@ public class PositionManagerService {
                     lastContraryDirection.remove(pos.getPair());
 
                     pos.setCloseReason(reason);
-                    historyService.recordClose(pos, exitPrice, reason, pos.getCandlesElapsed());
+                    historyService.recordClose(pos, pos.getClientOrderId(), exitPrice, reason, pos.getCandlesElapsed());
 
                     long cooldownMs = config.getCooldownMultiplier()
                             * config.getTimeframeDurationMs(pos.getTimeframe());
@@ -338,7 +338,10 @@ public class PositionManagerService {
                     // {type: "cross", value: 10}
                     leverage = Math.max(1, (int) toDouble(levMap.get("value")));
                 } else if (levObj instanceof String s) {
-                    try { leverage = Math.max(1, Integer.parseInt(s)); } catch (Exception ignored) {}
+                    try {
+                        leverage = Math.max(1, Integer.parseInt(s));
+                    } catch (Exception ignored) {
+                    }
                 }
 
                 // Use first configured timeframe as default
@@ -356,11 +359,26 @@ public class PositionManagerService {
                     tp = entryPx - slDist * 2;
                 }
 
+                // Fetch real trigger orders from exchange to override conservative SL/TP
+                // (t-bot bug #9: break-even lost at restart if we don't use real trigger
+                // prices)
+                String slTriggerId = null;
+                String tpTriggerId = null;
+                try {
+                    double[] triggers = executionService.getTriggerPricesForCoin(coin);
+                    if (triggers[0] > 0)
+                        tp = triggers[0];
+                    if (triggers[1] > 0)
+                        sl = triggers[1];
+                } catch (Exception e) {
+                    log.warn("[RECOVERY] Could not fetch trigger prices for {}: {}", coin, e.getMessage());
+                }
+
                 double currentPrice = entryPx; // will be updated on next price refresh
 
-                // Detect if break-even already applied (SL near entry = BE)
+                // Detect if break-even already applied (real SL near entry = BE)
                 boolean beApplied = Math.abs(sl - entryPx) / entryPx < 0.002;
-                double originalSl = beApplied ? sl * (direction.equals("LONG") ? 0.98 : 1.02) : sl;
+                double originalSl = beApplied ? (direction.equals("LONG") ? entryPx - slDist : entryPx + slDist) : sl;
 
                 OpenPosition recovered = OpenPosition.builder()
                         .pair(coin).timeframe(tf)
@@ -407,7 +425,7 @@ public class PositionManagerService {
         }
 
         pos.setCloseReason(reason);
-        historyService.recordClose(pos, exitPrice, reason, pos.getCandlesElapsed());
+        historyService.recordClose(pos, pos.getClientOrderId(), exitPrice, reason, pos.getCandlesElapsed());
 
         long cooldownMs = config.getCooldownMultiplier() * config.getTimeframeDurationMs(pos.getTimeframe());
         cooldowns.put(key, System.currentTimeMillis() + cooldownMs);
@@ -480,6 +498,10 @@ public class PositionManagerService {
 
     public int pendingOrderCount() {
         return executionService.pendingOrderCount();
+    }
+
+    public List<Map<String, Object>> getPendingOrderDetails() {
+        return executionService.getPendingOrderDetails();
     }
 
     /**

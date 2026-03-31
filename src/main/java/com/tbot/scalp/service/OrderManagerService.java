@@ -177,7 +177,7 @@ public class OrderManagerService {
     public double getEffectiveBalance() {
         if (config.isLiveTrading()) {
             double b = executionService.getAvailableBalance();
-            return b > 0 ? b : config.getDryRunBalance();
+            return Double.isNaN(b) ? config.getDryRunBalance() : b;
         }
         return config.getDryRunBalance() + positionManager.getRealizedPnl();
     }
@@ -189,7 +189,7 @@ public class OrderManagerService {
     public double getEffectiveEquity() {
         if (config.isLiveTrading()) {
             double e = executionService.getEquity();
-            return e > 0 ? e : getEffectiveBalance();
+            return Double.isNaN(e) ? getEffectiveBalance() : e;
         }
         double unrealized = positionManager.getOpenPositions().stream()
                 .mapToDouble(p -> p.getPositionSizeUsd() * p.getCurrentPnlPercent() / 100.0)
