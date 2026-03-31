@@ -45,6 +45,8 @@ public class ScalpConfig {
     private int minLeverage = 5;
     private int maxLeverage = 50;
     private double maxSlPercent = 1.5;
+    private double minSlPercent = 0.2; // global floor — overridden per TF
+    private double minSlAtrMult = 1.0; // SL must be at least this many ATR from entry (live + backtest)
 
     // ===== EXECUTION =====
     private boolean autoTrade = false;
@@ -128,6 +130,7 @@ public class ScalpConfig {
         private Double breakEvenTriggerPercent;
         private Double trailingStopAtrMult;
         private Double maxSlPercent;
+        private Double minSlPercent;
 
         public static TimeframeSettings defaultsFor(String tf) {
             TimeframeSettings s = new TimeframeSettings();
@@ -139,6 +142,7 @@ public class ScalpConfig {
                     s.breakEvenTriggerPercent = 55.0;
                     s.trailingStopAtrMult = 1.0;
                     s.maxSlPercent = 0.5;
+                    s.minSlPercent = 0.25;
                 }
                 case "3m" -> {
                     s.scoringBonus = 0.8;
@@ -147,6 +151,7 @@ public class ScalpConfig {
                     s.breakEvenTriggerPercent = 50.0;
                     s.trailingStopAtrMult = 1.2;
                     s.maxSlPercent = 0.8;
+                    s.minSlPercent = 0.35;
                 }
                 case "5m" -> {
                     s.scoringBonus = 1.0;
@@ -197,12 +202,19 @@ public class ScalpConfig {
             defaults.trailingStopAtrMult = override.trailingStopAtrMult;
         if (override.maxSlPercent != null)
             defaults.maxSlPercent = override.maxSlPercent;
+        if (override.minSlPercent != null)
+            defaults.minSlPercent = override.minSlPercent;
         return defaults;
     }
 
     public double getEffectiveMaxSl(String tf) {
         TimeframeSettings s = getEffectiveSettings(tf);
         return s.getMaxSlPercent() != null ? s.getMaxSlPercent() : maxSlPercent;
+    }
+
+    public double getEffectiveMinSl(String tf) {
+        TimeframeSettings s = getEffectiveSettings(tf);
+        return s.getMinSlPercent() != null ? s.getMinSlPercent() : minSlPercent;
     }
 
     public double getEffectiveThreshold(String tf) {

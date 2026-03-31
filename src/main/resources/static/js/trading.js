@@ -134,7 +134,8 @@ async function refreshPositions() {
                 ? (p.currentPrice - p.entryPrice) / p.entryPrice * 100 * p.leverage
                 : (p.entryPrice - p.currentPrice) / p.entryPrice * 100 * p.leverage;
             const posValueUsd = (p.quantity || 0) * (p.entryPrice || 0);
-            const pnlUsd = posValueUsd * pnl / 100;
+            const margin = posValueUsd / (p.leverage || 1);
+            const pnlUsd = margin * pnl / 100;
             const tpDist = Math.abs(p.takeProfit - p.entryPrice);
             const progress = tpDist > 0 ? (isLong
                 ? (p.currentPrice - p.entryPrice) / tpDist * 100
@@ -260,7 +261,9 @@ async function refreshJournal() {
 
         const tbody = el('trades-table-body');
         tbody.innerHTML = '';
-        for (const t of filtered.slice(0, 200)) {
+        // Show most recent entries first (data comes chronologically from API)
+        const recent = filtered.slice().reverse();
+        for (const t of recent.slice(0, 200)) {
             const isRejected = t.status === 'RISK_REJECTED';
             const tr = document.createElement('tr');
             if (isRejected) tr.className = 'trade-row-rejected';

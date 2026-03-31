@@ -1,5 +1,56 @@
 # Changelog — T-Bot Scalp
 
+## 2026-03-31
+
+### Fix getEquity() race condition au startup — peakEquity gonflé (faux drawdown)
+
+**Bug** — `getEquity()` faisait **2 appels API séparés** à `spotClearinghouseState` : un pour `getSpotUsdcBalance()` (total - hold) et un pour `getSpotUsdcTotal()`. Au startup, si l'API spot retourne temporairement `hold=0` (race condition HL), `spotBalance = spotTotal` (~$128) au lieu de `total - hold` (~$95). Comme `accountValue` (~$95) inclut le hold, equity = $128 + $95 = $223 au lieu de $194 → `initEquity` verrouille ce pic → faux drawdown 13%.
+
+**Fix** :
+- Nouveau `getSpotUsdcInfo()` : **un seul appel API** retourne `[total, hold]` — plus de race entre 2 appels
+- Cross-validation : si `spotHold=0` mais `totalMarginUsed > 0` (positions ouvertes), détection de la race → fallback conservateur `spotTotal` seul (ignore unrealized PnL plutôt que double-compter)
+- `getAvailableBalance()` aussi migré vers `getSpotUsdcInfo()`
+- Ajout logging dans `initEquity()` pour tracer le peakEquity initial au démarrage
+
+### Fix equity/balance double-counting sur comptes unifiés (Portfolio Margin)
+
+**Bug critique** — Sur les comptes Hyperliquid en Portfolio Margin (USDC en spot utilisé comme collatéral perps), l'equity et la balance étaient surestimées par double-comptage.
+
+**`getEquity()` — double-comptage du hold spot**
+- Avant : `spotTotal + (accountValue - marginUsed)` → le `spotTotal` ($192) inclut déjà le `hold` ($66) qui EST le collatéral perps (`accountValue` ≈ $66). Résultat : equity gonflée de ~$29
+- Après : `spotBalance (total - hold) + accountValue` → pas de double-comptage
+- **Impact** : `peakEquity` gonflé à $308 au lieu de ~$192 → faux drawdown de 28% → circuit breaker bloquait tout le trading
+
+**`getAvailableBalance()` — mauvaise source en cours de trade**
+- Avant : retournait le free margin perps ($29) quand des positions étaient ouvertes, ignorant le spot available ($126)
+- Après : utilise toujours `spotBalance` (total - hold) sur comptes unifiés — c'est ce que HL utilise pour la marge des nouvelles positions
+
+### Fix syncWithExchange — safety guard trop aggressif
+
+Le safety guard `exchangePositions.isEmpty() && tracking > 0` bloquait la sync quand une position était **réellement** fermée sur HL (pas une erreur API).
+
+- Avant : return immédiat si exchange retourne 0 positions → position STX restait "stuck" indéfiniment côté bot
+- Après : query `getRecentCloseFillPrices()` d'abord — si des fills de fermeture existent pour les coins trackés, la position est réellement fermée → sync procède normalement. Seule l'absence de fills déclenche le guard
+
+### Fix recoverPositions — enrichissement depuis le journal
+
+Au redémarrage, les positions récupérées depuis HL perdaient toutes les métadonnées bot (score, candles, timestamps, trigger OIDs).
+
+**Avant** (valeurs remises à 0) :
+- `openTimestamp` = now, `candlesElapsed` = 0
+- `score` = 0, `clientOrderId` / `exchangeOrderId` = null
+- `tpTriggerId` / `slTriggerId` = null (syncWithExchange ne pouvait pas déterminer TP_HIT vs SL_HIT)
+- `timeframe` = premier TF configuré (ignorait le TF réel du trade)
+- SL/TP = fallback conservateur uniquement
+
+**Après** (enrichi depuis journal + exchange) :
+- `openTimestamp` = timestamp du journal (heure réelle d'ouverture)
+- `candlesElapsed` = calculé depuis le vrai timestamp et la durée du TF
+- `score`, `clientOrderId`, `exchangeOrderId` restaurés depuis la dernière entrée journal pour ce coin
+- `timeframe` depuis le journal (1m ou 3m — le TF réel du trade)
+- SL/TP : priorité journal → trigger prices exchange (autoritatif) → fallback conservateur
+- Nouveau `getTriggerOidsByCoin()` : restaure les OIDs TP/SL depuis `frontendOpenOrders` après recovery
+
 ## 2026-03-30
 
 ### Implémentation live trading Hyperliquid

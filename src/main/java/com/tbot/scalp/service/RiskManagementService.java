@@ -38,11 +38,16 @@ public class RiskManagementService {
             rejections.add("Stop-loss is required");
         }
 
-        // 3. SL distance
+        // 3. SL distance (min + max)
         double slDist = Math.abs(signal.getEntryPrice() - signal.getStopLoss()) / signal.getEntryPrice() * 100;
         double effectiveMaxSl = config.getEffectiveMaxSl(signal.getTimeframe());
+        double effectiveMinSl = config.getEffectiveMinSl(signal.getTimeframe());
         if (slDist > effectiveMaxSl) {
             rejections.add(String.format("SL distance %.2f%% > max %.2f%%", slDist, effectiveMaxSl));
+        }
+        if (slDist < effectiveMinSl) {
+            rejections.add(
+                    String.format("SL distance %.2f%% < min %.2f%% (too tight, noise risk)", slDist, effectiveMinSl));
         }
 
         // 4. Available balance
@@ -136,6 +141,8 @@ public class RiskManagementService {
             peakEquity = equity;
             dailyStartBalance = equity;
             dailyResetTimestamp = System.currentTimeMillis();
+            log.info("[RISK] initEquity: peakEquity={}, dailyStartBalance={}",
+                    String.format("%.2f", equity), String.format("%.2f", equity));
         }
     }
 

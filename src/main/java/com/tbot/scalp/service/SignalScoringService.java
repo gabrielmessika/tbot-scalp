@@ -7,12 +7,13 @@ import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import com.tbot.scalp.config.ScalpConfig;
 import com.tbot.scalp.model.Candle;
 import com.tbot.scalp.model.RawSignal;
 import com.tbot.scalp.model.Signal;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Signal scoring for scalp signals. 8-component scoring system:
@@ -54,6 +55,27 @@ public class SignalScoringService {
             if (idx < 0 || idx >= candles.size())
                 continue;
 
+            // Adjust SL if too tight: must be at least max(minSlPercent, minSlAtrMult ×
+            // ATR)
+            double entryPrice = primary.getEntryPrice();
+            double rawSl = primary.getSuggestedSl();
+            double rawSlDist = entryPrice > 0 ? Math.abs(entryPrice - rawSl) / entryPrice * 100 : 0;
+            double atrPct = (idx < atr.length && atr[idx] > 0 && candles.get(idx).getClose() > 0)
+                    ? atr[idx] / candles.get(idx).getClose() * 100
+                    : 0;
+            double minSlPct = Math.max(config.getEffectiveMinSl(timeframe), config.getMinSlAtrMult() * atrPct);
+            double adjustedSl = rawSl;
+            if (rawSlDist < minSlPct && minSlPct > 0) {
+                adjustedSl = "LONG".equals(primary.getDirection())
+                        ? entryPrice * (1.0 - minSlPct / 100.0)
+                        : entryPrice * (1.0 + minSlPct / 100.0);
+                log.debug("{} {} SL widened {}→{} ({}%→{}%, ATR={}%)",
+                        pair, primary.getDirection(),
+                        String.format("%.4f", rawSl), String.format("%.4f", adjustedSl),
+                        String.format("%.3f", rawSlDist), String.format("%.3f", minSlPct),
+                        String.format("%.3f", atrPct));
+            }
+
             double score = 0;
             List<String> strategies = new ArrayList<>();
 
@@ -72,13 +94,13 @@ public class SignalScoringService {
                 score += tfSettings.getScoringBonus();
             }
 
-            // 3. R:R ratio
+            // 3. R:R ratio (using adjusted SL)
             double risk = "LONG".equals(primary.getDirection())
-                    ? primary.getEntryPrice() - primary.getSuggestedSl()
-                    : primary.getSuggestedSl() - primary.getEntryPrice();
+                    ? entryPrice - adjustedSl
+                    : adjustedSl - entryPrice;
             double reward = "LONG".equals(primary.getDirection())
-                    ? primary.getSuggestedTp() - primary.getEntryPrice()
-                    : primary.getEntryPrice() - primary.getSuggestedTp();
+                    ? primary.getSuggestedTp() - entryPrice
+                    : entryPrice - primary.getSuggestedTp();
             double rr = risk > 0 ? reward / risk : 0;
 
             if (rr >= 3.0)
@@ -138,9 +160,8 @@ public class SignalScoringService {
             if (score < config.getMinScore())
                 continue;
 
-            // Calculate SL distance
-            double slDist = Math.abs(primary.getEntryPrice() - primary.getSuggestedSl()) / primary.getEntryPrice()
-                    * 100;
+            // SL distance (using adjusted SL)
+            double slDist = entryPrice > 0 ? Math.abs(entryPrice - adjustedSl) / entryPrice * 100 : 0;
             double effectiveMaxSl = config.getEffectiveMaxSl(timeframe);
             if (slDist > effectiveMaxSl)
                 continue;
@@ -160,8 +181,8 @@ public class SignalScoringService {
             scored.add(Signal.builder()
                     .pair(pair).timeframe(timeframe)
                     .direction(primary.getDirection())
-                    .entryPrice(primary.getEntryPrice())
-                    .stopLoss(primary.getSuggestedSl())
+                    .entryPrice(entryPrice)
+                    .stopLoss(adjustedSl)
                     .takeProfit(primary.getSuggestedTp())
                     .score(Math.round(score * 10.0) / 10.0)
                     .confidence(confidence)

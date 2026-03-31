@@ -145,7 +145,9 @@ public class AnalysisService {
                     if (candles.size() < 50)
                         continue;
 
-                    List<Signal> signals = detectAndScore(candles, coin, tf);
+                    // Exclude last (incomplete) candle — indicators on closed candles are stable
+                    List<Candle> closedCandles = candles.subList(0, candles.size() - 1);
+                    List<Signal> signals = detectAndScore(closedCandles, coin, tf);
                     // Filter to recent signals only
                     int maxAge = config.getMaxSignalAgeCandlesLive();
                     int minIdx = candles.size() - maxAge;

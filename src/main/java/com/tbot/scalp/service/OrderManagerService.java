@@ -192,7 +192,7 @@ public class OrderManagerService {
             return Double.isNaN(e) ? getEffectiveBalance() : e;
         }
         double unrealized = positionManager.getOpenPositions().stream()
-                .mapToDouble(p -> p.getPositionSizeUsd() * p.getCurrentPnlPercent() / 100.0)
+                .mapToDouble(p -> p.getPositionSizeUsd() / p.getLeverage() * p.getCurrentPnlPercent() / 100.0)
                 .sum();
         return getEffectiveBalance() + unrealized;
     }
@@ -202,7 +202,7 @@ public class OrderManagerService {
      */
     public double getUnrealizedPnl() {
         return positionManager.getOpenPositions().stream()
-                .mapToDouble(p -> p.getPositionSizeUsd() * p.getCurrentPnlPercent() / 100.0)
+                .mapToDouble(p -> p.getPositionSizeUsd() / p.getLeverage() * p.getCurrentPnlPercent() / 100.0)
                 .sum();
     }
 

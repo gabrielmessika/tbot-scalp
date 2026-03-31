@@ -123,6 +123,8 @@ public class PositionManagerService {
             }
 
             // Level 1: Progressive break-even (3 levels)
+            // If trailing stop already moved SL past a BE level, just update beLevel
+            // (don't regress the SL)
             {
                 double bePercent = tfSettings.getBreakEvenTriggerPercent() != null
                         ? tfSettings.getBreakEvenTriggerPercent()
@@ -130,34 +132,42 @@ public class PositionManagerService {
                 double progress = pos.getTpProgressPercent();
                 double tpDist = Math.abs(pos.getTakeProfit() - pos.getEntryPrice());
                 boolean isLong = "LONG".equals(pos.getDirection());
-                double newSl = pos.getStopLoss();
 
                 if (progress >= bePercent + 25 && pos.getBeLevel() < 3) {
-                    newSl = isLong ? pos.getEntryPrice() + 0.5 * tpDist : pos.getEntryPrice() - 0.5 * tpDist;
-                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
-                        pos.setStopLoss(newSl);
-                        pos.setBeLevel(3);
-                        pos.setBreakEvenApplied(true);
-                        updateExchangeStopLoss(pos, newSl, "BE-L3");
-                        log.info("[BE-L3] {} SL locked at 50% TP: {}", pos.getPair(), newSl);
+                    double beSl = isLong ? pos.getEntryPrice() + 0.5 * tpDist : pos.getEntryPrice() - 0.5 * tpDist;
+                    pos.setBeLevel(3);
+                    pos.setBreakEvenApplied(true);
+                    if (isLong ? beSl > pos.getStopLoss() : beSl < pos.getStopLoss()) {
+                        pos.setStopLoss(beSl);
+                        updateExchangeStopLoss(pos, beSl, "BE-L3");
+                        log.info("[BE-L3] {} SL locked at 50% TP: {}", pos.getPair(), beSl);
+                    } else {
+                        log.info("[BE-L3] {} level set (trailing SL {} already past BE {})",
+                                pos.getPair(), pos.getStopLoss(), beSl);
                     }
                 } else if (progress >= bePercent + 15 && pos.getBeLevel() < 2) {
-                    newSl = isLong ? pos.getEntryPrice() + 0.25 * tpDist : pos.getEntryPrice() - 0.25 * tpDist;
-                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
-                        pos.setStopLoss(newSl);
-                        pos.setBeLevel(2);
-                        pos.setBreakEvenApplied(true);
-                        updateExchangeStopLoss(pos, newSl, "BE-L2");
-                        log.info("[BE-L2] {} SL locked at 25% TP: {}", pos.getPair(), newSl);
+                    double beSl = isLong ? pos.getEntryPrice() + 0.25 * tpDist : pos.getEntryPrice() - 0.25 * tpDist;
+                    pos.setBeLevel(2);
+                    pos.setBreakEvenApplied(true);
+                    if (isLong ? beSl > pos.getStopLoss() : beSl < pos.getStopLoss()) {
+                        pos.setStopLoss(beSl);
+                        updateExchangeStopLoss(pos, beSl, "BE-L2");
+                        log.info("[BE-L2] {} SL locked at 25% TP: {}", pos.getPair(), beSl);
+                    } else {
+                        log.info("[BE-L2] {} level set (trailing SL {} already past BE {})",
+                                pos.getPair(), pos.getStopLoss(), beSl);
                     }
                 } else if (progress >= bePercent && pos.getBeLevel() < 1) {
-                    newSl = pos.getEntryPrice();
-                    if (isLong ? newSl > pos.getStopLoss() : newSl < pos.getStopLoss()) {
-                        pos.setStopLoss(newSl);
-                        pos.setBeLevel(1);
-                        pos.setBreakEvenApplied(true);
-                        updateExchangeStopLoss(pos, newSl, "BE-L1");
-                        log.info("[BE-L1] {} SL moved to entry {}", pos.getPair(), newSl);
+                    double beSl = pos.getEntryPrice();
+                    pos.setBeLevel(1);
+                    pos.setBreakEvenApplied(true);
+                    if (isLong ? beSl > pos.getStopLoss() : beSl < pos.getStopLoss()) {
+                        pos.setStopLoss(beSl);
+                        updateExchangeStopLoss(pos, beSl, "BE-L1");
+                        log.info("[BE-L1] {} SL moved to entry {}", pos.getPair(), beSl);
+                    } else {
+                        log.info("[BE-L1] {} level set (trailing SL {} already past entry {})",
+                                pos.getPair(), pos.getStopLoss(), beSl);
                     }
                 }
             }
@@ -225,12 +235,31 @@ public class PositionManagerService {
         try {
             List<Map<String, Object>> exchangePositions = executionService.getExchangePositions();
 
-            // Safety guard: if exchange returns 0 but we track >0, might be API error
+            // Safety guard: if exchange returns 0 but we track >0, check for real close
+            // fills
+            // before assuming API error. If fills exist → positions genuinely closed.
             if (exchangePositions.isEmpty() && openPositions.size() > 0) {
-                log.warn("[SYNC] Exchange returned 0 positions but tracking {}. " +
-                        "Possible API error — skipping sync to avoid false SL_HIT",
-                        openPositions.size());
-                return;
+                long sinceMs = java.time.Instant.now().minusSeconds(2 * 3600).toEpochMilli();
+                Map<String, Double> closeFills = executionService.getRecentCloseFillPrices(sinceMs);
+
+                // Check if any tracked coin has a real close fill
+                boolean hasRealFills = false;
+                for (var entry : openPositions.values()) {
+                    String coin = HyperliquidMarketDataService.toHyperliquidCoin(entry.getPair());
+                    if (closeFills.containsKey(coin)) {
+                        hasRealFills = true;
+                        break;
+                    }
+                }
+
+                if (!hasRealFills) {
+                    log.warn("[SYNC] Exchange returned 0 positions but tracking {} and no close fills found. " +
+                            "Possible API error — skipping sync to avoid false SL_HIT",
+                            openPositions.size());
+                    return;
+                }
+                log.info("[SYNC] Exchange returned 0 positions, tracking {} — " +
+                        "close fills found, proceeding with sync", openPositions.size());
             }
 
             // Build set of coins that have positions on exchange
@@ -360,17 +389,20 @@ public class PositionManagerService {
                 return;
             }
 
-            // Build set of coins that the bot has journal entries for (FILLED or
-            // PENDING_FILL)
-            java.util.Set<String> botCoins = new java.util.HashSet<>();
+            // Build map of the LATEST journal entry per coin (FILLED or PENDING_FILL)
+            // Used to enrich recovered positions with score, clientOrderId, timestamps,
+            // etc.
+            Map<String, Map<String, Object>> latestJournalByCoin = new LinkedHashMap<>();
             List<Map<String, Object>> journalEntries = journalService.readAllParsed();
             for (Map<String, Object> je : journalEntries) {
                 String status = String.valueOf(je.getOrDefault("status", ""));
                 if ("FILLED".equals(status) || "PENDING_FILL".equals(status) || "DRY_RUN".equals(status)) {
-                    botCoins.add(String.valueOf(je.getOrDefault("pair", "")));
+                    String coin = String.valueOf(je.getOrDefault("pair", ""));
+                    // Keep the latest entry (journal is chronological)
+                    latestJournalByCoin.put(coin, je);
                 }
             }
-            log.info("[RECOVERY] Known bot coins from journal: {}", botCoins);
+            log.info("[RECOVERY] Known bot coins from journal: {}", latestJournalByCoin.keySet());
 
             for (Map<String, Object> ep : exchangePositions) {
                 @SuppressWarnings("unchecked")
@@ -384,7 +416,7 @@ public class PositionManagerService {
                     continue;
 
                 // Skip positions not opened by the bot (no journal entry)
-                if (!botCoins.contains(coin)) {
+                if (!latestJournalByCoin.containsKey(coin)) {
                     log.info("[RECOVERY] Skipping pre-bot position {} (no journal entry)", coin);
                     continue;
                 }
@@ -408,8 +440,18 @@ public class PositionManagerService {
                     }
                 }
 
-                // Use first configured timeframe as default
-                String tf = config.getTimeframes().isEmpty() ? "3m" : config.getTimeframes().get(0);
+                // Enrich from journal entry
+                Map<String, Object> journal = latestJournalByCoin.get(coin);
+                String tf = String.valueOf(journal.getOrDefault("timeframe",
+                        config.getTimeframes().isEmpty() ? "3m" : config.getTimeframes().get(0)));
+                double score = toDouble(journal.getOrDefault("score", 0));
+                String clientOrderId = journal.get("clientOrderId") != null
+                        ? String.valueOf(journal.get("clientOrderId"))
+                        : null;
+                String exchangeOrderId = journal.get("exchangeOrderId") != null
+                        ? String.valueOf(journal.get("exchangeOrderId"))
+                        : null;
+                long journalTs = (long) toDouble(journal.getOrDefault("timestamp", 0));
 
                 // Conservative SL/TP based on maxSlPercent
                 double maxSl = config.getEffectiveMaxSl(tf) / 100.0;
@@ -423,7 +465,16 @@ public class PositionManagerService {
                     tp = entryPx - slDist * 2;
                 }
 
-                // Fetch real trigger orders from exchange to override conservative SL/TP
+                // Override SL/TP with journal values if present (more accurate than
+                // conservative)
+                double journalSl = toDouble(journal.getOrDefault("stopLoss", 0));
+                double journalTp = toDouble(journal.getOrDefault("takeProfit", 0));
+                if (journalSl > 0)
+                    sl = journalSl;
+                if (journalTp > 0)
+                    tp = journalTp;
+
+                // Fetch real trigger orders from exchange to override (authoritative)
                 // (t-bot bug #9: break-even lost at restart if we don't use real trigger
                 // prices)
                 String slTriggerId = null;
@@ -438,11 +489,16 @@ public class PositionManagerService {
                     log.warn("[RECOVERY] Could not fetch trigger prices for {}: {}", coin, e.getMessage());
                 }
 
-                double currentPrice = entryPx; // will be updated on next price refresh
-
                 // Detect if break-even already applied (real SL near entry = BE)
                 boolean beApplied = Math.abs(sl - entryPx) / entryPx < 0.002;
                 double originalSl = beApplied ? (direction.equals("LONG") ? entryPx - slDist : entryPx + slDist) : sl;
+
+                // Compute candlesElapsed from real open time
+                long openTs = journalTs > 0 ? journalTs : System.currentTimeMillis();
+                long tfDurationMs = config.getTimeframeDurationMs(tf);
+                int candlesElapsed = tfDurationMs > 0
+                        ? (int) ((System.currentTimeMillis() - openTs) / tfDurationMs)
+                        : 0;
 
                 OpenPosition recovered = OpenPosition.builder()
                         .pair(coin).timeframe(tf)
@@ -451,19 +507,61 @@ public class PositionManagerService {
                         .stopLoss(sl).takeProfit(tp)
                         .originalStopLoss(originalSl)
                         .leverage(leverage).quantity(qty)
-                        .currentPrice(currentPrice)
+                        .currentPrice(entryPx)
                         .exchange("hyperliquid")
                         .dryRun(false)
-                        .openTimestamp(System.currentTimeMillis())
+                        .openTimestamp(openTs)
+                        .candlesElapsed(candlesElapsed)
                         .breakEvenApplied(beApplied)
                         .beLevel(beApplied ? 1 : 0)
+                        .score(score)
+                        .clientOrderId(clientOrderId)
+                        .exchangeOrderId(exchangeOrderId)
                         .build();
 
                 String key = coin + ":" + tf;
                 openPositions.put(key, recovered);
-                log.info("[RECOVERY] Recovered {} {} {} @ {} qty={} lev={}x SL={} TP={}",
-                        direction, coin, tf, entryPx, qty, leverage, sl, tp);
+                log.info("[RECOVERY] Recovered {} {} {} @ {} qty={} lev={}x SL={} TP={} score={} candles={} openTs={}",
+                        direction, coin, tf, entryPx, qty, leverage, sl, tp, score, candlesElapsed,
+                        java.time.Instant.ofEpochMilli(openTs));
             }
+
+            // Restore trigger OIDs from exchange open orders
+            if (!openPositions.isEmpty()) {
+                try {
+                    Map<String, String[]> triggerOids = executionService.getTriggerOidsByCoin();
+                    for (var entry : openPositions.entrySet()) {
+                        OpenPosition p = entry.getValue();
+                        String[] oids = triggerOids.get(p.getPair());
+                        if (oids != null) {
+                            if (oids[0] != null)
+                                p.setTpTriggerId(oids[0]);
+                            if (oids[1] != null)
+                                p.setSlTriggerId(oids[1]);
+                            log.info("[RECOVERY] {} trigger OIDs restored — TP={}, SL={}, BE={}",
+                                    p.getPair(), oids[0], oids[1], p.isBreakEvenApplied());
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("[RECOVERY] Failed to restore trigger OIDs: {}", e.getMessage());
+                }
+
+                // Fetch current prices and update PnL for all recovered positions
+                for (var entry : openPositions.entrySet()) {
+                    OpenPosition p = entry.getValue();
+                    try {
+                        double price = executionService.fetchCurrentPrice(p.getPair());
+                        if (price > 0) {
+                            p.updatePrice(price);
+                            log.info("[RECOVERY] {} price updated: {} → PnL {}%",
+                                    p.getPair(), price, String.format("%.2f", p.getCurrentPnlPercent()));
+                        }
+                    } catch (Exception e) {
+                        log.warn("[RECOVERY] {} — failed to fetch current price: {}", p.getPair(), e.getMessage());
+                    }
+                }
+            }
+
             log.info("[RECOVERY] Recovered {} positions from exchange", openPositions.size());
         } catch (Exception e) {
             log.error("[RECOVERY] Failed to recover positions: {}", e.getMessage());
