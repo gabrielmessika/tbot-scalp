@@ -95,8 +95,19 @@ public class RiskManagementService {
             dailyResetTimestamp = now;
         }
 
-        if (equity > peakEquity)
-            peakEquity = equity;
+        if (equity > peakEquity) {
+            // Guard against API artifacts (e.g. spot/perps race returning inflated equity).
+            // A single-cycle jump > 5% of peak is almost certainly an API glitch, not a
+            // real gain — accepting it would set peakEquity too high and trigger a false
+            // drawdown throttle for the rest of the session.
+            if (equity <= peakEquity * 1.05) {
+                peakEquity = equity;
+            } else {
+                log.warn("[RISK] Equity spike ignored: {} → {} (+{}%) exceeds 5% single-cycle limit — likely API artifact, peakEquity unchanged",
+                        String.format("%.2f", peakEquity), String.format("%.2f", equity),
+                        String.format("%.1f", (equity - peakEquity) / peakEquity * 100));
+            }
+        }
 
         double dailyPnl = equity - dailyStartBalance;
         double dailyPnlPercent = dailyStartBalance > 0 ? (dailyPnl / dailyStartBalance) * 100 : 0;
